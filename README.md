@@ -12,6 +12,11 @@ If you are using Windows 10+, the WebView2 runtime should already be installed. 
 
 [WebView2 runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
 
+## Requirements
+
+- **Go 1.21 or later** - This library uses [`runtime.Pinner`](https://pkg.go.dev/runtime#Pinner) to ensure safe interaction with native Windows COM code
+- **Windows 10+** with WebView2 runtime installed
+
 ## Basic Usage
 
 ```go

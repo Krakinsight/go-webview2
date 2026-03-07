@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"unsafe"
 
@@ -30,6 +31,11 @@ type Chromium struct {
 
 	environment *ICoreWebView2Environment
 
+	// pinner prevents event handlers from being moved by the garbage collector.
+	// All event handlers are pinned because they are passed to native Windows
+	// COM code which retains pointers to them.
+	pinner runtime.Pinner
+
 	// Settings
 	DataPath string
 
@@ -46,17 +52,8 @@ type Chromium struct {
 
 func NewChromium() *Chromium {
 	e := &Chromium{}
-	/*
-	 All these handlers are passed to native code through syscalls with 'uintptr(unsafe.Pointer(handler))' and we know
-	 that a pointer to those will be kept in the native code. Furthermore these handlers als contain pointer to other Go
-	 structs like the vtable.
-	 This violates the unsafe.Pointer rule '(4) Conversion of a Pointer to a uintptr when calling syscall.Syscall.' because
-	 theres no guarantee that Go doesn't move these objects.
-	 AFAIK currently the Go runtime doesn't move HEAP objects, so we should be safe with these handlers. But they don't
-	 guarantee it, because in the future Go might use a compacting GC.
-	 There's a proposal to add a runtime.Pin function, to prevent moving pinned objects, which would allow to easily fix
-	 this issue by just pinning the handlers. The https://go-review.googlesource.com/c/go/+/367296/ should land in Go 1.19.
-	*/
+
+	// Create all event handlers
 	e.envCompleted = newICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler(e)
 	e.controllerCompleted = newICoreWebView2CreateCoreWebView2ControllerCompletedHandler(e)
 	e.webMessageReceived = newICoreWebView2WebMessageReceivedEventHandler(e)
@@ -64,6 +61,23 @@ func NewChromium() *Chromium {
 	e.webResourceRequested = newICoreWebView2WebResourceRequestedEventHandler(e)
 	e.acceleratorKeyPressed = newICoreWebView2AcceleratorKeyPressedEventHandler(e)
 	e.navigationCompleted = newICoreWebView2NavigationCompletedEventHandler(e)
+
+	// Pin all handlers to prevent the GC from moving them.
+	// These handlers are passed to native COM code which retains pointers to them,
+	// and we must ensure the objects don't move in memory.
+	e.pinner.Pin(e.envCompleted)
+	e.pinner.Pin(e.controllerCompleted)
+	e.pinner.Pin(e.webMessageReceived)
+	e.pinner.Pin(e.permissionRequested)
+	e.pinner.Pin(e.webResourceRequested)
+	e.pinner.Pin(e.acceleratorKeyPressed)
+	e.pinner.Pin(e.navigationCompleted)
+
+	// Set up finalizer as a safety net if Close() is not called explicitly
+	runtime.SetFinalizer(e, func(c *Chromium) {
+		c.Close()
+	})
+
 	e.permissions = make(map[CoreWebView2PermissionKind]CoreWebView2PermissionState)
 
 	return e
@@ -358,4 +372,19 @@ func (e *Chromium) Focus() {
 		return
 	}
 	_ = e.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+}
+
+// ************************************************************************************************
+// Close releases all pinned handlers and cleans up resources.
+// This method should be called when the Chromium instance is no longer needed.
+// If not called explicitly, a finalizer will attempt to clean up, but explicit
+// cleanup is preferred for deterministic resource management.
+//
+// Example usage:
+//
+//	chromium := edge.NewChromium()
+//	defer chromium.Close()
+//	// ... use chromium ...
+func (e *Chromium) Close() {
+	e.pinner.Unpin()
 }
