@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/jchv/go-webview2/internal/w32"
+	"github.com/Krakinsight/go-webview2/internal/w32"
 	"golang.org/x/sys/windows"
 )
 

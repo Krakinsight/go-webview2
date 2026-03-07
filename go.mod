@@ -1,4 +1,4 @@
-module github.com/jchv/go-webview2
+module github.com/Krakinsight/go-webview2
 
 go 1.21
 

@@ -12,8 +12,8 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/jchv/go-webview2/internal/w32"
-	"github.com/jchv/go-webview2/pkg/edge"
+	"github.com/Krakinsight/go-webview2/internal/w32"
+	"github.com/Krakinsight/go-webview2/pkg/edge"
 
 	"golang.org/x/sys/windows"
 )

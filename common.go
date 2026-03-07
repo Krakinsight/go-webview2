@@ -3,7 +3,7 @@ package webview2
 import (
 	"unsafe"
 
-	"github.com/jchv/go-webview2/pkg/edge"
+	"github.com/Krakinsight/go-webview2/pkg/edge"
 )
 
 // This is copied from webview/webview.
