@@ -1,6 +1,10 @@
 package webview2
 
-import "unsafe"
+import (
+	"unsafe"
+
+	"github.com/jchv/go-webview2/pkg/edge"
+)
 
 // This is copied from webview/webview.
 // The documentation is included for convenience.
@@ -20,6 +24,29 @@ const (
 
 	// HintMax specifies that width and height are maximum bounds
 	HintMax
+)
+
+// WindowStyle defines the visual style and behavior of a window.
+type WindowStyle uint32
+
+const (
+	// WindowStyleDefault creates a standard overlapped window with title bar,
+	// system menu, and thick frame (resizable).
+	WindowStyleDefault WindowStyle = 0xCF0000 // WS_OVERLAPPEDWINDOW
+
+	// WindowStyleBorderless creates a window without any borders or decorations.
+	// Useful for custom-styled windows or splash screens.
+	WindowStyleBorderless WindowStyle = 0x80000000 // WS_POPUP
+
+	// WindowStyleToolWindow creates a tool window with a smaller title bar.
+	// Not shown in taskbar.
+	WindowStyleToolWindow WindowStyle = 0x00C80080 // WS_EX_TOOLWINDOW | WS_CAPTION
+
+	// WindowStyleFixed creates a non-resizable window with title bar and system menu.
+	WindowStyleFixed WindowStyle = 0x00C80000 // WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
+
+	// WindowStyleDialog creates a dialog-style window.
+	WindowStyleDialog WindowStyle = 0x80C80000 // WS_POPUP | WS_CAPTION | WS_SYSMENU
 )
 
 // WebView is the interface for the webview.
@@ -81,4 +108,14 @@ type WebView interface {
 	// f must be a function
 	// f must return either value and error or just error
 	Bind(name string, f interface{}) error
+
+	// GetSettings returns the ICoreWebViewSettings interface for configuring WebView2 settings.
+	// This provides direct access to all WebView2 configuration options including:
+	// - User-Agent customization
+	// - Script execution control
+	// - Context menu behavior
+	// - DevTools availability
+	// - Zoom controls
+	// - And more...
+	GetSettings() *edge.ICoreWebViewSettings
 }

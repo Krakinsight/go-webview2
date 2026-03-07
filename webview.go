@@ -35,6 +35,28 @@ func setWindowContext(wnd uintptr, data interface{}) {
 	windowContext[wnd] = data
 }
 
+// ************************************************************************************************
+// Location represents a 2D position with X and Y coordinates.
+// Used for positioning windows on the screen.
+//
+// Coordinates can be positive or negative:
+// - Positive coordinates position from top-left corner of the screen
+// - Negative coordinates position from bottom-right corner of the screen
+//
+// Examples:
+//   - Location{X: 0, Y: 0}        -> Top-left corner
+//   - Location{X: 100, Y: 100}    -> 100px from left, 100px from top
+//   - Location{X: -20, Y: -50}    -> 20px from right, 50px from bottom (taskbar-safe)
+//   - Location{X: -500, Y: 50}    -> 500px from right edge, 50px from top
+//   - Location{X: 100, Y: -100}   -> 100px from left, 100px from bottom
+//
+// Note: When using negative Y coordinates, consider the taskbar height (typically 40-50px)
+// to avoid window overlap.
+type Location struct {
+	X int32 // X coordinate (positive: from left, negative: from right)
+	Y int32 // Y coordinate (positive: from top, negative: from bottom)
+}
+
 type browser interface {
 	Embed(hwnd uintptr) bool
 	Resize()
@@ -50,6 +72,7 @@ type webview struct {
 	hwnd       uintptr
 	mainthread uintptr
 	browser    browser
+	settings   *edge.ICoreWebViewSettings
 	autofocus  bool
 	maxsz      w32.Point
 	minsz      w32.Point
@@ -63,7 +86,19 @@ type WindowOptions struct {
 	Width  uint
 	Height uint
 	IconId uint
+
+	// Location specifies the top-left position of the window.
+	// If nil, uses Center behavior if Center is true, otherwise uses OS default.
+	// Use the Location struct: &Location{X: 100, Y: 100}
+	Location *Location
+
+	// Center centers the window on the screen.
+	// Ignored if Location is specified.
 	Center bool
+
+	// Style specifies the window style using Windows style constants.
+	// Use WindowStyleDefault if not specified (0 value).
+	Style WindowStyle
 }
 
 type WebViewOptions struct {
@@ -77,6 +112,10 @@ type WebViewOptions struct {
 	// AutoFocus will try to keep the WebView2 widget focused when the window
 	// is focused.
 	AutoFocus bool
+
+	// UserAgent specifies a custom User-Agent string for the WebView2 instance.
+	// If empty, the default Edge User-Agent is used.
+	UserAgent string
 
 	// WindowOptions customizes the window that is created to embed the
 	// WebView2 widget.
@@ -114,15 +153,23 @@ func NewWithOptions(options WebViewOptions) WebView {
 	if err != nil {
 		log.Fatal(err)
 	}
+	w.settings = settings
 	// disable context menu
-	err = settings.PutAreDefaultContextMenusEnabled(options.Debug)
+	err = w.settings.PutAreDefaultContextMenusEnabled(options.Debug)
 	if err != nil {
 		log.Fatal(err)
 	}
 	// disable developer tools
-	err = settings.PutAreDevToolsEnabled(options.Debug)
+	err = w.settings.PutAreDevToolsEnabled(options.Debug)
 	if err != nil {
 		log.Fatal(err)
+	}
+	// set custom user agent if provided
+	if options.UserAgent != "" {
+		err = w.settings.PutUserAgent(options.UserAgent)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	return w
@@ -294,6 +341,7 @@ func (w *webview) CreateWithOptions(opts WindowOptions) bool {
 
 	windowName, _ := windows.UTF16PtrFromString(opts.Title)
 
+	// Determine window dimensions
 	windowWidth := opts.Width
 	if windowWidth == 0 {
 		windowWidth = 640
@@ -303,25 +351,60 @@ func (w *webview) CreateWithOptions(opts WindowOptions) bool {
 		windowHeight = 480
 	}
 
-	var posX, posY uint
-	if opts.Center {
-		// get screen size
+	// Determine window position with priority: explicit Location > Center > default
+	var posX, posY uintptr
+	if opts.Location != nil {
+		// Explicit position specified
+		// Support negative coordinates for positioning from screen edges:
+		// - Negative X positions from right edge of work area
+		// - Negative Y positions from bottom edge of work area (excludes taskbar)
+		var workArea w32.Rect
+		_, _, _ = w32.User32SystemParametersInfoW.Call(
+			w32.SPI_GETWORKAREA,
+			0,
+			uintptr(unsafe.Pointer(&workArea)),
+			0,
+		)
+
+		workWidth := workArea.Right - workArea.Left
+		workHeight := workArea.Bottom - workArea.Top
+
+		if opts.Location.X < 0 {
+			// Position from right edge: workArea.Left + workWidth + X - windowWidth
+			posX = uintptr(workArea.Left + workWidth + opts.Location.X - int32(windowWidth))
+		} else {
+			posX = uintptr(workArea.Left + opts.Location.X)
+		}
+
+		if opts.Location.Y < 0 {
+			// Position from bottom edge: workArea.Top + workHeight + Y - windowHeight
+			posY = uintptr(workArea.Top + workHeight + opts.Location.Y - int32(windowHeight))
+		} else {
+			posY = uintptr(workArea.Top + opts.Location.Y)
+		}
+	} else if opts.Center {
+		// Calculate centered position
 		screenWidth, _, _ := w32.User32GetSystemMetrics.Call(w32.SM_CXSCREEN)
 		screenHeight, _, _ := w32.User32GetSystemMetrics.Call(w32.SM_CYSCREEN)
-		// calculate window position
-		posX = (uint(screenWidth) - windowWidth) / 2
-		posY = (uint(screenHeight) - windowHeight) / 2
+		posX = uintptr((uint(screenWidth) - windowWidth) / 2)
+		posY = uintptr((uint(screenHeight) - windowHeight) / 2)
 	} else {
-		// use default position
+		// Use OS default position
 		posX = w32.CW_USEDEFAULT
 		posY = w32.CW_USEDEFAULT
+	}
+
+	// Determine window style
+	windowStyle := opts.Style
+	if windowStyle == 0 {
+		windowStyle = WindowStyleDefault
 	}
 
 	w.hwnd, _, _ = w32.User32CreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(windowName)),
-		0xCF0000, // WS_OVERLAPPEDWINDOW
+		uintptr(windowStyle), // Use specified or default style
 		uintptr(posX),
 		uintptr(posY),
 		uintptr(windowWidth),
@@ -479,4 +562,20 @@ func (w *webview) Bind(name string, f interface{}) error {
 	})()`)
 
 	return nil
+}
+
+// ************************************************************************************************
+// GetSettings returns the ICoreWebViewSettings interface for configuring WebView2 settings.
+// This provides direct access to all WebView2 configuration options including:
+// - User-Agent customization
+// - Script execution control
+// - Context menu behavior
+// - DevTools availability
+// - Zoom controls
+// - And more...
+//
+// Returns:
+//   - *edge.ICoreWebViewSettings: The settings interface for this WebView2 instance
+func (w *webview) GetSettings() *edge.ICoreWebViewSettings {
+	return w.settings
 }
