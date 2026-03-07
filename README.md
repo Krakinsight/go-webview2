@@ -92,6 +92,34 @@ settings.PutAreBrowserAcceleratorKeysEnabled(false)
 - `WindowStyleBorderless` - No borders/title bar (custom UI)
 - `WindowStyleToolWindow` - Tool window (not in taskbar)
 
+### DPI Awareness
+
+Control how your application handles high-DPI displays to ensure crisp rendering across different display configurations:
+
+```go
+w := webview2.NewWithOptions(webview2.WebViewOptions{
+    WindowOptions: webview2.WindowOptions{
+        Title:                "My DPI-Aware App",
+        Width:                800,
+        Height:               600,
+        DpiAwarenessContext:  webview2.DpiAwarenessContextPerMonitorAwareV2,
+    },
+})
+```
+
+#### Available DPI Awareness Modes:
+
+- `DpiAwarenessContextDefault` - System default (no explicit setting)
+- `DpiAwarenessContextUnaware` - Windows handles scaling (may appear blurry)
+- `DpiAwarenessContextSystemAware` - Scales to primary monitor DPI
+- `DpiAwarenessContextPerMonitorAware` - Adapts to each monitor
+- `DpiAwarenessContextPerMonitorAwareV2` - **Recommended** for Windows 10 1703+
+- `DpiAwarenessContextUnawareGdiScaled` - Improved unaware mode (Windows 10 1809+)
+
+**Recommendation**: Use `DpiAwarenessContextPerMonitorAwareV2` for modern applications to ensure crisp rendering across all displays. This setting is particularly important for applications that will be used on high-DPI monitors or multi-monitor setups with different DPI settings.
+
+**Note**: The DPI awareness setting affects the entire process and should be set early during window creation. On older Windows versions where the API is unavailable, the setting is silently ignored for backward compatibility.
+
 ## Demos
 
 ### Available Demos
@@ -119,6 +147,11 @@ go run ./cmd/demo-toolwindow
 **Bottom-right positioned:**
 ```
 go run ./cmd/demo-bottomright
+```
+
+**DPI awareness demonstration:**
+```
+go run ./cmd/demo-dpi-aware
 ```
 
 This will use go-winloader to load an embedded copy of WebView2Loader.dll. If you want, you can also provide a newer version of WebView2Loader.dll in the DLL search path and it should be picked up instead. It can be acquired from the WebView2 SDK (which is permissively licensed.)

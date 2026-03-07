@@ -49,6 +49,85 @@ const (
 	WindowStyleDialog WindowStyle = 0x80C80000 // WS_POPUP | WS_CAPTION | WS_SYSMENU
 )
 
+// ************************************************************************************************
+// DpiAwarenessContext defines how the application handles DPI scaling on Windows.
+// Different modes determine how Windows scales the application's windows and content
+// on high-DPI displays. Setting DPI awareness ensures crisp rendering across different
+// display configurations.
+//
+// References:
+//   - https://learn.microsoft.com/en-us/windows/win32/hidpi/high-dpi-desktop-application-development-on-windows
+//   - https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext
+type DpiAwarenessContext int
+
+const (
+	// DpiAwarenessContextDefault uses the system default DPI awareness.
+	// This is the default behavior if no DPI awareness is explicitly set.
+	// When set to 0 (default value), no DPI awareness configuration is applied.
+	DpiAwarenessContextDefault DpiAwarenessContext = 0
+
+	// DpiAwarenessContextUnaware means the application is DPI unaware.
+	// Windows will bitmap stretch the window on high-DPI displays, which may appear blurry.
+	// Value: -1 (DPI_AWARENESS_CONTEXT_UNAWARE)
+	DpiAwarenessContextUnaware DpiAwarenessContext = -1
+
+	// DpiAwarenessContextSystemAware means the application is system DPI aware.
+	// It scales to match the DPI of the primary display at application startup.
+	// Does not adapt when moved to monitors with different DPI settings.
+	// Value: -2 (DPI_AWARENESS_CONTEXT_SYSTEM_AWARE)
+	DpiAwarenessContextSystemAware DpiAwarenessContext = -2
+
+	// DpiAwarenessContextPerMonitorAware means the application is per-monitor DPI aware.
+	// It checks the DPI when created and adjusts scale factors when DPI changes.
+	// Requires Windows 10 Anniversary Update (1607) or later.
+	// Value: -3 (DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE)
+	DpiAwarenessContextPerMonitorAware DpiAwarenessContext = -3
+
+	// DpiAwarenessContextPerMonitorAwareV2 provides enhanced per-monitor DPI awareness.
+	// Similar to V1 but with improved support for mixed-mode DPI scaling and child window DPI scaling.
+	// Recommended for modern Windows 10+ applications.
+	// Requires Windows 10 Creators Update (1703) or later.
+	// Value: -4 (DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+	DpiAwarenessContextPerMonitorAwareV2 DpiAwarenessContext = -4
+
+	// DpiAwarenessContextUnawareGdiScaled is DPI unaware with improved GDI scaling.
+	// Better than basic unaware mode with less blurry text rendering.
+	// Requires Windows 10 October 2018 Update (1809) or later.
+	// Value: -5 (DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED)
+	DpiAwarenessContextUnawareGdiScaled DpiAwarenessContext = -5
+)
+
+type WindowOptions struct {
+	Title  string
+	Width  uint
+	Height uint
+	IconId uint
+
+	// Location specifies the top-left position of the window.
+	// If nil, uses Center behavior if Center is true, otherwise uses OS default.
+	// Use the Location struct: &Location{X: 100, Y: 100}
+	Location *Location
+
+	// Center centers the window on the screen.
+	// Ignored if Location is specified.
+	Center bool
+
+	// Style specifies the window style using Windows style constants.
+	// Use WindowStyleDefault if not specified (0 value).
+	Style WindowStyle
+
+	// DpiAwarenessContext sets the DPI awareness for the process.
+	// Use DpiAwarenessContextDefault (0) to skip setting DPI awareness.
+	// Recommended: DpiAwarenessContextPerMonitorAwareV2 for modern Windows 10+ apps.
+	//
+	// Example:
+	//   DpiAwarenessContext: webview2.DpiAwarenessContextPerMonitorAwareV2
+	//
+	// Note: This setting affects the entire process and should be set early.
+	// On older Windows versions where the API is unavailable, this setting is silently ignored.
+	DpiAwarenessContext DpiAwarenessContext
+}
+
 // WebView is the interface for the webview.
 type WebView interface {
 

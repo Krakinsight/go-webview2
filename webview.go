@@ -81,26 +81,6 @@ type webview struct {
 	dispatchq  []func()
 }
 
-type WindowOptions struct {
-	Title  string
-	Width  uint
-	Height uint
-	IconId uint
-
-	// Location specifies the top-left position of the window.
-	// If nil, uses Center behavior if Center is true, otherwise uses OS default.
-	// Use the Location struct: &Location{X: 100, Y: 100}
-	Location *Location
-
-	// Center centers the window on the screen.
-	// Ignored if Location is specified.
-	Center bool
-
-	// Style specifies the window style using Windows style constants.
-	// Use WindowStyleDefault if not specified (0 value).
-	Style WindowStyle
-}
-
 type WebViewOptions struct {
 	Window unsafe.Pointer
 	Debug  bool
@@ -316,6 +296,24 @@ func (w *webview) Create(debug bool, window unsafe.Pointer) bool {
 func (w *webview) CreateWithOptions(opts WindowOptions) bool {
 	var hinstance windows.Handle
 	_ = windows.GetModuleHandleEx(0, nil, &hinstance)
+
+	// Set DPI awareness context if specified
+	// This affects the entire process and determines how Windows handles DPI scaling.
+	// Setting it early ensures consistent DPI behavior for all windows.
+	if opts.DpiAwarenessContext != 0 {
+		// Try to find the SetProcessDpiAwarenessContext API
+		// This API is available on Windows 10 Anniversary Update (1607) and later
+		if err := w32.User32SetProcessDpiAwarenessContext.Find(); err == nil {
+			// Call SetProcessDpiAwarenessContext with the specified awareness context
+			// Returns BOOL (non-zero on success), but we ignore failures since:
+			// - Some contexts may not be supported on older Windows versions
+			// - DPI awareness may have already been set
+			// - This is best-effort configuration
+			w32.User32SetProcessDpiAwarenessContext.Call(uintptr(opts.DpiAwarenessContext))
+		}
+		// If the API is not found (older Windows), we silently continue
+		// This ensures backward compatibility with older Windows versions
+	}
 
 	var icon uintptr
 	if opts.IconId == 0 {
