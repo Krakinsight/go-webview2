@@ -85,6 +85,31 @@ settings.PutIsZoomControlEnabled(false)
 settings.PutAreBrowserAcceleratorKeysEnabled(false)
 ```
 
+### Accelerator Keys
+
+```go
+w.SetAcceleratorKeyCallback(func(virtualKey uint) bool {
+    switch virtualKey {
+    case 0x74: // VK_F5
+        fmt.Println("Blocked F5 refresh")
+        return true // Block the key
+    case 0x7B: // VK_F12  
+        fmt.Println("Blocked DevTools")
+        return true
+    default:
+        return false // Allow other keys
+    }
+})
+```
+
+Common virtual key codes:
+- `0x74` - F5 (Refresh)
+- `0x7B` - F12 (DevTools)
+- `0x41-0x5A` - Letters A-Z
+- `0x30-0x39` - Numbers 0-9
+
+See [Virtual-Key Codes](https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes) for complete reference.
+
 ### Window Styles
 
 - `WindowStyleDefault` - Standard resizable window
@@ -152,6 +177,11 @@ go run ./cmd/demo-bottomright
 **DPI awareness demonstration:**
 ```
 go run ./cmd/demo-dpi-aware
+```
+
+**Accelerator keys (F5/F12 blocking):**
+```
+go run ./cmd/demo-accelerator-keys
 ```
 
 This will use go-winloader to load an embedded copy of WebView2Loader.dll. If you want, you can also provide a newer version of WebView2Loader.dll in the DLL search path and it should be picked up instead. It can be acquired from the WebView2 SDK (which is permissively licensed.)

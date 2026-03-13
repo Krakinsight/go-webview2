@@ -577,3 +577,46 @@ func (w *webview) Bind(name string, f interface{}) error {
 func (w *webview) GetSettings() *edge.ICoreWebViewSettings {
 	return w.settings
 }
+
+// ************************************************************************************************
+// SetAcceleratorKeyCallback sets a callback function to handle keyboard accelerator keys.
+// The callback receives virtual key codes and returns true if the key was handled.
+//
+// This method passes the callback to the underlying Chromium browser instance,
+// which registers it with the native WebView2 AcceleratorKeyPressed event handler.
+//
+// Parameters:
+//   - callback: Function that receives virtual key code and returns bool (true = handled)
+//
+// Virtual key codes are Windows VK_* constants:
+// https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
+//
+// Example usage:
+//
+//	w := webview2.New(true)
+//	w.SetAcceleratorKeyCallback(func(virtualKey uint) bool {
+//	    switch virtualKey {
+//	    case 0x74: // VK_F5
+//	        fmt.Println("Blocked F5 refresh")
+//	        return true
+//	    case 0x7B: // VK_F12
+//	        fmt.Println("Blocked F12 DevTools")
+//	        return true
+//	    case 0x57: // 'W' key
+//	        // Check if Ctrl is pressed separately if needed
+//	        fmt.Println("W key pressed")
+//	        return false
+//	    default:
+//	        return false // Allow default handling
+//	    }
+//	})
+//
+// Note: The callback is invoked on KEY_DOWN events only, not on key repeat or KEY_UP.
+// The underlying implementation automatically filters repeat events using WasKeyDown status.
+func (w *webview) SetAcceleratorKeyCallback(callback AcceleratorKeyCallback) {
+	chromium, ok := w.browser.(*edge.Chromium)
+	if !ok {
+		return
+	}
+	chromium.AcceleratorKeyCallback = callback
+}

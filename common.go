@@ -97,6 +97,37 @@ const (
 	DpiAwarenessContextUnawareGdiScaled DpiAwarenessContext = -5
 )
 
+// ************************************************************************************************
+// AcceleratorKeyCallback is called when a keyboard accelerator key is pressed.
+// It receives the virtual key code and returns true if the event was handled.
+//
+// Virtual key codes are defined by Windows:
+// https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
+//
+// Common examples:
+//   - VK_F5 (0x74) for F5
+//   - VK_F12 (0x7B) for F12
+//   - 'A' (0x41) for the A key
+//
+// The callback is invoked on KEY_DOWN events only (not on KEY_UP or repeat).
+// Return true to mark the key as handled and prevent default browser behavior.
+// Return false to allow the browser to handle the key normally.
+//
+// Example usage:
+//
+//	w.SetAcceleratorKeyCallback(func(virtualKey uint) bool {
+//	    if virtualKey == 0x74 { // VK_F5
+//	        fmt.Println("F5 pressed - refresh blocked")
+//	        return true // Block default refresh
+//	    }
+//	    if virtualKey == 0x7B { // VK_F12
+//	        fmt.Println("F12 pressed - DevTools blocked")
+//	        return true // Block DevTools
+//	    }
+//	    return false // Allow other keys
+//	})
+type AcceleratorKeyCallback func(virtualKey uint) bool
+
 type WindowOptions struct {
 	Title  string
 	Width  uint
@@ -197,4 +228,25 @@ type WebView interface {
 	// - Zoom controls
 	// - And more...
 	GetSettings() *edge.ICoreWebViewSettings
+
+	// SetAcceleratorKeyCallback sets a callback for handling keyboard accelerator keys.
+	// The callback receives the virtual key code and returns true if handled.
+	//
+	// This allows intercepting and handling keyboard shortcuts before the browser
+	// processes them. Common use cases include:
+	// - Blocking F5 (refresh)
+	// - Blocking F12 (DevTools)
+	// - Implementing custom keyboard shortcuts
+	// - Overriding default browser keyboard behavior
+	//
+	// The callback is invoked only on KEY_DOWN events (not KEY_UP or repeat).
+	// Virtual key codes follow Windows VK_* constants:
+	// https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
+	//
+	// Example:
+	//   w.SetAcceleratorKeyCallback(func(vk uint) bool {
+	//       if vk == 0x74 { return true } // Block F5
+	//       return false
+	//   })
+	SetAcceleratorKeyCallback(callback AcceleratorKeyCallback)
 }
