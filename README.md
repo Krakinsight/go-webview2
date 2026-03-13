@@ -145,6 +145,36 @@ w := webview2.NewWithOptions(webview2.WebViewOptions{
 
 **Note**: The DPI awareness setting affects the entire process and should be set early during window creation. On older Windows versions where the API is unavailable, the setting is silently ignored for backward compatibility.
 
+### Window Close from JavaScript
+
+You cannot create a binding named `close()` because it conflicts with the built-in `window.close()` function. However, you can easily add a `closewebview()` function in JavaScript by binding it to `w.Destroy()`:
+
+```go
+w := webview2.NewWithOptions(webview2.WebViewOptions{
+    Debug:     true,
+    WindowOptions: webview2.WindowOptions{
+        Title:  "My App",
+        Width:  800,
+        Height: 600,
+    },
+})
+
+// Bind close function
+w.Bind("closewebview", func() {
+    w.Destroy()
+})
+```
+
+Then in JavaScript:
+
+```javascript
+// Simple close button
+<button onclick="closewebview()">Close Window</button>
+
+// With confirmation
+<button onclick="if(confirm('Close?')) closewebview()">Close</button>
+```
+
 ## Demos
 
 ### Available Demos
@@ -182,6 +212,11 @@ go run ./cmd/demo-dpi-aware
 **Accelerator keys (F5/F12 blocking):**
 ```
 go run ./cmd/demo-accelerator-keys
+```
+
+**Window close from JavaScript:**
+```
+go run ./cmd/demo-close
 ```
 
 This will use go-winloader to load an embedded copy of WebView2Loader.dll. If you want, you can also provide a newer version of WebView2Loader.dll in the DLL search path and it should be picked up instead. It can be acquired from the WebView2 SDK (which is permissively licensed.)
