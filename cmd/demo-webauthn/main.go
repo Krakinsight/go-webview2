@@ -1,33 +1,16 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"log"
-	"sync"
+	"time"
 
 	"github.com/Krakinsight/go-webview2"
 )
-
-// Simple in-memory credential store for demo purposes
-type credentialStore struct {
-	mu          sync.Mutex
-	credentials map[string]storedCredential
-}
-
-type storedCredential struct {
-	ID          string
-	PublicKey   string
-	SignCount   uint32
-	UserHandle  string
-	DisplayName string
-}
-
-var store = &credentialStore{
-	credentials: make(map[string]storedCredential),
-}
 
 func main() {
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
@@ -46,27 +29,51 @@ func main() {
 	}
 	defer w.Destroy()
 
+	// Create in-memory credential store
+	store := webview2.NewInMemoryCredentialStore()
+
 	// Enable WebAuthn bridge
 	bridge := w.EnableWebAuthnBridge()
+	bridge.SetCredentialStore(store)
+	bridge.SetTimeout(60 * time.Second)
 
 	// Set up credential creation handler
-	bridge.SetCreateHandler(handleCreateCredential)
+	bridge.SetCreateHandler(func(ctx context.Context, opts webview2.WebAuthnCreateOptions) (webview2.WebAuthnCredential, error) {
+		return handleCreateCredential(ctx, opts, store)
+	})
 
 	// Set up credential get/assertion handler
-	bridge.SetGetHandler(handleGetCredential)
+	bridge.SetGetHandler(func(ctx context.Context, opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAssertion, error) {
+		return handleGetCredential(ctx, opts, store)
+	})
 
 	// Set up availability check handler
 	bridge.SetIsAvailableHandler(func() bool {
 		return true // WebAuthn is always available in this demo
 	})
 
+	// Log Windows Hello availability
+	if webview2.IsWebAuthnDLLAvailable() {
+		version, _ := webview2.GetWebAuthnAPIVersion()
+		log.Printf("Windows Hello is available (WebAuthn API version: %d)", version)
+	} else {
+		log.Printf("Windows Hello (webauthn.dll) not available - using mock implementation")
+	}
+
 	w.SetHtml(demoHTML)
 	w.Run()
 }
 
-func handleCreateCredential(opts webview2.WebAuthnCreateOptions) (webview2.WebAuthnCredential, error) {
+func handleCreateCredential(ctx context.Context, opts webview2.WebAuthnCreateOptions, store webview2.CredentialStore) (webview2.WebAuthnCredential, error) {
 	log.Printf("Creating credential for user: %s (display: %s)", opts.User.Name, opts.User.DisplayName)
 	log.Printf("Relying Party: %s", opts.RP.Name)
+
+	// Check for context cancellation
+	select {
+	case <-ctx.Done():
+		return webview2.WebAuthnCredential{}, ctx.Err()
+	default:
+	}
 
 	// Generate a random credential ID
 	credentialID := make([]byte, 32)
@@ -75,12 +82,11 @@ func handleCreateCredential(opts webview2.WebAuthnCreateOptions) (webview2.WebAu
 	}
 	credIDBase64 := base64.RawURLEncoding.EncodeToString(credentialID)
 
-	// For demo purposes, generate a mock public key
+	// For demo purposes, generate a mock public key (COSE format would be used in production)
 	publicKey := make([]byte, 65) // Mock ECDSA P-256 public key
 	if _, err := rand.Read(publicKey); err != nil {
 		return webview2.WebAuthnCredential{}, err
 	}
-	publicKeyBase64 := base64.RawURLEncoding.EncodeToString(publicKey)
 
 	// Create client data JSON
 	clientData := map[string]interface{}{
@@ -104,15 +110,19 @@ func handleCreateCredential(opts webview2.WebAuthnCreateOptions) (webview2.WebAu
 	attestationBase64 := base64.RawURLEncoding.EncodeToString(attestationObj)
 
 	// Store the credential
-	store.mu.Lock()
-	store.credentials[credIDBase64] = storedCredential{
-		ID:          credIDBase64,
-		PublicKey:   publicKeyBase64,
-		SignCount:   0,
-		UserHandle:  opts.User.ID,
-		DisplayName: opts.User.DisplayName,
+	storedCred := webview2.StoredCredential{
+		ID:        credIDBase64,
+		RPID:      opts.RP.ID,
+		UserID:    opts.User.ID,
+		UserName:  opts.User.Name,
+		PublicKey: publicKey,
+		SignCount: 0,
+		CreatedAt: time.Now(),
 	}
-	store.mu.Unlock()
+
+	if err := store.Save(storedCred); err != nil {
+		return webview2.WebAuthnCredential{}, err
+	}
 
 	log.Printf("✓ Credential created successfully (ID: %s...)", credIDBase64[:8])
 
@@ -127,20 +137,25 @@ func handleCreateCredential(opts webview2.WebAuthnCreateOptions) (webview2.WebAu
 	}, nil
 }
 
-func handleGetCredential(opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAssertion, error) {
+func handleGetCredential(ctx context.Context, opts webview2.WebAuthnGetOptions, store webview2.CredentialStore) (webview2.WebAuthnAssertion, error) {
 	log.Printf("Getting credential assertion for RP: %s", opts.RPID)
 
-	// Find a matching credential
-	store.mu.Lock()
-	defer store.mu.Unlock()
+	// Check for context cancellation
+	select {
+	case <-ctx.Done():
+		return webview2.WebAuthnAssertion{}, ctx.Err()
+	default:
+	}
 
-	var matchedCred storedCredential
+	// Find matching credentials
+	var matchedCred webview2.StoredCredential
 	var found bool
 
 	if len(opts.AllowCredentials) > 0 {
 		// Look for a specific credential
 		for _, allowedID := range opts.AllowCredentials {
-			if cred, ok := store.credentials[allowedID]; ok {
+			cred, err := store.Load(allowedID)
+			if err == nil {
 				matchedCred = cred
 				found = true
 				break
@@ -148,10 +163,10 @@ func handleGetCredential(opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAss
 		}
 	} else {
 		// Return any credential for this RP
-		for _, cred := range store.credentials {
-			matchedCred = cred
+		creds, err := store.LoadAll(opts.RPID)
+		if err == nil && len(creds) > 0 {
+			matchedCred = creds[0]
 			found = true
-			break
 		}
 	}
 
@@ -160,7 +175,7 @@ func handleGetCredential(opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAss
 		return webview2.WebAuthnAssertion{}, nil
 	}
 
-	log.Printf("✓ Found credential: %s (user: %s)", matchedCred.ID[:8]+"...", matchedCred.DisplayName)
+	log.Printf("✓ Found credential: %s (user: %s)", matchedCred.ID[:8]+"...", matchedCred.UserName)
 
 	// Create client data JSON
 	clientData := map[string]interface{}{
@@ -179,7 +194,9 @@ func handleGetCredential(opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAss
 
 	// Update sign count
 	matchedCred.SignCount++
-	store.credentials[matchedCred.ID] = matchedCred
+	if err := store.Save(matchedCred); err != nil {
+		return webview2.WebAuthnAssertion{}, err
+	}
 
 	authData[33] = byte(matchedCred.SignCount >> 24)
 	authData[34] = byte(matchedCred.SignCount >> 16)
@@ -203,7 +220,7 @@ func handleGetCredential(opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAss
 			ClientDataJSON:    clientDataBase64,
 			AuthenticatorData: authDataBase64,
 			Signature:         signatureBase64,
-			UserHandle:        matchedCred.UserHandle,
+			UserHandle:        matchedCred.UserID,
 		},
 	}, nil
 }

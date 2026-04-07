@@ -4,21 +4,55 @@
 package webview2
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"sync"
+	"time"
 )
+
+// CredentialStore defines an interface for storing and retrieving WebAuthn credentials.
+// This allows applications to choose their own storage backend (SQLite, encrypted files, vault, etc.).
+type CredentialStore interface {
+	// Save stores a credential
+	Save(credential StoredCredential) error
+
+	// Load retrieves a credential by its ID
+	Load(credentialID string) (StoredCredential, error)
+
+	// LoadAll retrieves all credentials for a given Relying Party ID
+	LoadAll(rpID string) ([]StoredCredential, error)
+
+	// Delete removes a credential
+	Delete(credentialID string) error
+}
+
+// StoredCredential represents a stored WebAuthn credential
+type StoredCredential struct {
+	ID        string    // Credential ID (base64url encoded)
+	RPID      string    // Relying Party ID
+	UserID    string    // User ID (base64url encoded)
+	UserName  string    // User name
+	PublicKey []byte    // COSE-encoded public key
+	SignCount uint32    // Signature counter
+	CreatedAt time.Time // Creation timestamp
+}
 
 // WebAuthnBridge provides a JavaScript bridge for WebAuthn functionality.
 // Since WebView2's sandbox blocks access to the platform authenticator (Windows Hello/FIDO2),
 // this bridge allows intercepting WebAuthn calls and handling them through alternative means.
 type WebAuthnBridge struct {
-	webview             WebView
-	createHandler       func(options WebAuthnCreateOptions) (WebAuthnCredential, error)
-	getHandler          func(options WebAuthnGetOptions) (WebAuthnAssertion, error)
-	isAvailableHandler  func() bool
+	webview            WebView
+	createHandler      func(ctx context.Context, options WebAuthnCreateOptions) (WebAuthnCredential, error)
+	getHandler         func(ctx context.Context, options WebAuthnGetOptions) (WebAuthnAssertion, error)
+	isAvailableHandler func() bool
+	store              CredentialStore
+	timeout            time.Duration
+	mu                 sync.Mutex
+	pending            bool // Only one WebAuthn operation at a time
 }
 
 // WebAuthnCreateOptions represents the options for creating a new credential
@@ -28,6 +62,7 @@ type WebAuthnCreateOptions struct {
 	User                   User                   `json:"user"`
 	PubKeyCredParams       []PubKeyCredParam      `json:"pubKeyCredParams"`
 	AuthenticatorSelection AuthenticatorSelection `json:"authenticatorSelection,omitempty"`
+	ExcludeCredentials     []string               `json:"excludeCredentials,omitempty"`
 	Timeout                int                    `json:"timeout,omitempty"`
 	Attestation            string                 `json:"attestation,omitempty"`
 }
@@ -102,6 +137,7 @@ type AssertionResponse struct {
 func (w *webview) EnableWebAuthnBridge() *WebAuthnBridge {
 	bridge := &WebAuthnBridge{
 		webview: w,
+		timeout: 60 * time.Second, // Default 60 second timeout
 		isAvailableHandler: func() bool {
 			// Default: WebAuthn is available
 			return true
@@ -120,12 +156,12 @@ func (w *webview) EnableWebAuthnBridge() *WebAuthnBridge {
 }
 
 // SetCreateHandler sets a custom handler for credential creation
-func (b *WebAuthnBridge) SetCreateHandler(handler func(options WebAuthnCreateOptions) (WebAuthnCredential, error)) {
+func (b *WebAuthnBridge) SetCreateHandler(handler func(ctx context.Context, options WebAuthnCreateOptions) (WebAuthnCredential, error)) {
 	b.createHandler = handler
 }
 
 // SetGetHandler sets a custom handler for credential assertion
-func (b *WebAuthnBridge) SetGetHandler(handler func(options WebAuthnGetOptions) (WebAuthnAssertion, error)) {
+func (b *WebAuthnBridge) SetGetHandler(handler func(ctx context.Context, options WebAuthnGetOptions) (WebAuthnAssertion, error)) {
 	b.getHandler = handler
 }
 
@@ -134,8 +170,33 @@ func (b *WebAuthnBridge) SetIsAvailableHandler(handler func() bool) {
 	b.isAvailableHandler = handler
 }
 
+// SetCredentialStore sets the credential store for the bridge
+func (b *WebAuthnBridge) SetCredentialStore(store CredentialStore) {
+	b.store = store
+}
+
+// SetTimeout sets the timeout for WebAuthn operations
+func (b *WebAuthnBridge) SetTimeout(timeout time.Duration) {
+	b.timeout = timeout
+}
+
 // handleCreate handles the credential creation call from JavaScript
 func (b *WebAuthnBridge) handleCreate(optionsJSON string) (string, error) {
+	// Check if an operation is already pending
+	b.mu.Lock()
+	if b.pending {
+		b.mu.Unlock()
+		return "", errors.New("WebAuthn operation already in progress")
+	}
+	b.pending = true
+	b.mu.Unlock()
+
+	defer func() {
+		b.mu.Lock()
+		b.pending = false
+		b.mu.Unlock()
+	}()
+
 	if b.createHandler == nil {
 		return "", errors.New("WebAuthn create handler not set")
 	}
@@ -147,7 +208,11 @@ func (b *WebAuthnBridge) handleCreate(optionsJSON string) (string, error) {
 
 	log.Printf("WebAuthn Create request: RP=%s, User=%s", options.RP.Name, options.User.Name)
 
-	credential, err := b.createHandler(options)
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
+	defer cancel()
+
+	credential, err := b.createHandler(ctx, options)
 	if err != nil {
 		return "", err
 	}
@@ -162,6 +227,21 @@ func (b *WebAuthnBridge) handleCreate(optionsJSON string) (string, error) {
 
 // handleGet handles the assertion request from JavaScript
 func (b *WebAuthnBridge) handleGet(optionsJSON string) (string, error) {
+	// Check if an operation is already pending
+	b.mu.Lock()
+	if b.pending {
+		b.mu.Unlock()
+		return "", errors.New("WebAuthn operation already in progress")
+	}
+	b.pending = true
+	b.mu.Unlock()
+
+	defer func() {
+		b.mu.Lock()
+		b.pending = false
+		b.mu.Unlock()
+	}()
+
 	if b.getHandler == nil {
 		return "", errors.New("WebAuthn get handler not set")
 	}
@@ -173,7 +253,11 @@ func (b *WebAuthnBridge) handleGet(optionsJSON string) (string, error) {
 
 	log.Printf("WebAuthn Get request: RPID=%s", options.RPID)
 
-	assertion, err := b.getHandler(options)
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
+	defer cancel()
+
+	assertion, err := b.getHandler(ctx, options)
 	if err != nil {
 		return "", err
 	}
@@ -248,6 +332,11 @@ const webauthnBridgeJS = `
 
 		if (options.authenticatorSelection) {
 			serialized.authenticatorSelection = options.authenticatorSelection;
+		}
+		if (options.excludeCredentials && options.excludeCredentials.length > 0) {
+			serialized.excludeCredentials = options.excludeCredentials.map(cred =>
+				arrayBufferToBase64Url(cred.id)
+			);
 		}
 		if (options.timeout) {
 			serialized.timeout = options.timeout;
