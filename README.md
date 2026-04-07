@@ -145,6 +145,93 @@ w := webview2.NewWithOptions(webview2.WebViewOptions{
 
 **Note**: The DPI awareness setting affects the entire process and should be set early during window creation. On older Windows versions where the API is unavailable, the setting is silently ignored for backward compatibility.
 
+### WebAuthn Bridge
+
+WebView2's sandbox blocks direct access to the platform authenticator (Windows Hello / FIDO2). The WebAuthn bridge provides a JavaScript-to-Go bridge that intercepts `navigator.credentials` API calls and routes them through custom Go handlers.
+
+```go
+w := webview2.NewWithOptions(webview2.WebViewOptions{
+    Debug:     true,
+    WindowOptions: webview2.WindowOptions{
+        Title:  "WebAuthn Demo",
+        Width:  800,
+        Height: 600,
+    },
+})
+
+// Enable WebAuthn bridge
+bridge := w.EnableWebAuthnBridge()
+
+// Handle credential creation (registration)
+bridge.SetCreateHandler(func(opts webview2.WebAuthnCreateOptions) (webview2.WebAuthnCredential, error) {
+    // Implement credential creation logic
+    // This could interact with Windows Hello, FIDO2 devices, or custom authenticators
+    log.Printf("Creating credential for user: %s", opts.User.Name)
+
+    // Return a credential response
+    return webview2.WebAuthnCredential{
+        ID:    "credential-id-base64url",
+        RawID: "credential-id-base64url",
+        Type:  "public-key",
+        Response: webview2.CredentialResponse{
+            ClientDataJSON:    "base64url-encoded-client-data",
+            AttestationObject: "base64url-encoded-attestation",
+        },
+    }, nil
+})
+
+// Handle credential assertion (authentication)
+bridge.SetGetHandler(func(opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAssertion, error) {
+    // Implement authentication logic
+    log.Printf("Authenticating with RP: %s", opts.RPID)
+
+    // Return an assertion response
+    return webview2.WebAuthnAssertion{
+        ID:    "credential-id-base64url",
+        RawID: "credential-id-base64url",
+        Type:  "public-key",
+        Response: webview2.AssertionResponse{
+            ClientDataJSON:    "base64url-encoded-client-data",
+            AuthenticatorData: "base64url-encoded-authenticator-data",
+            Signature:         "base64url-encoded-signature",
+            UserHandle:        "base64url-encoded-user-handle",
+        },
+    }, nil
+})
+```
+
+The JavaScript WebAuthn API works transparently with the bridge:
+
+```javascript
+// Register a new credential
+const credential = await navigator.credentials.create({
+    publicKey: {
+        challenge: new Uint8Array(32),
+        rp: { name: "My App", id: "localhost" },
+        user: {
+            id: new Uint8Array(16),
+            name: "user@example.com",
+            displayName: "User Name"
+        },
+        pubKeyCredParams: [{ type: "public-key", alg: -7 }]
+    }
+});
+
+// Authenticate with a credential
+const assertion = await navigator.credentials.get({
+    publicKey: {
+        challenge: new Uint8Array(32),
+        rpId: "localhost"
+    }
+});
+```
+
+**Key Benefits:**
+- Bypasses WebView2 sandbox limitations
+- Full control over authentication flow
+- Compatible with standard WebAuthn JavaScript APIs
+- Can integrate with Windows Hello, FIDO2 devices, or custom authenticators
+
 ### Window Close from JavaScript
 
 You cannot create a binding named `close()` because it conflicts with the built-in `window.close()` function. However, you can easily add a `closewebview()` function in JavaScript by binding it to `w.Destroy()`:
@@ -217,6 +304,11 @@ go run ./cmd/demo-accelerator-keys
 **Window close from JavaScript:**
 ```
 go run ./cmd/demo-close
+```
+
+**WebAuthn bridge demonstration:**
+```
+go run ./cmd/demo-webauthn
 ```
 
 This will use go-winloader to load an embedded copy of WebView2Loader.dll. If you want, you can also provide a newer version of WebView2Loader.dll in the DLL search path and it should be picked up instead. It can be acquired from the WebView2 SDK (which is permissively licensed.)
