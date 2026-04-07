@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"syscall"
 	"unsafe"
 
@@ -323,8 +324,15 @@ func syscallMakeCredential(hwnd uintptr, options WebAuthnCreateOptions) (WebAuth
 	}
 
 	// Create client data JSON
+	// Use provided origin or fallback to RPID (which is incorrect but better than nothing)
+	origin := options.Origin
+	if origin == "" {
+		log.Printf("WARNING: No origin provided, using RPID as fallback")
+		origin = "https://" + options.RP.ID
+	}
+
 	clientDataJSON := fmt.Sprintf(`{"type":"webauthn.create","challenge":"%s","origin":"%s"}`,
-		options.Challenge, options.RP.ID)
+		options.Challenge, origin)
 	clientDataBytes := []byte(clientDataJSON)
 
 	clientData := webauthnClientData{
@@ -336,7 +344,7 @@ func syscallMakeCredential(hwnd uintptr, options WebAuthnCreateOptions) (WebAuth
 
 	// Create options
 	makeCredOptions := webauthnAuthenticatorMakeCredentialOptions{
-		dwVersion:                         4,
+		dwVersion:                         3, // Version 3 to match struct fields
 		dwTimeoutMilliseconds:             60000,
 		dwAuthenticatorAttachment:         WEBAUTHN_AUTHENTICATOR_ATTACHMENT_PLATFORM,
 		bRequireResidentKey:               0,
@@ -406,8 +414,15 @@ func syscallGetAssertion(hwnd uintptr, options WebAuthnGetOptions) (WebAuthnAsse
 	}
 
 	// Create client data JSON
+	// Use provided origin or fallback to RPID (which is incorrect but better than nothing)
+	origin := options.Origin
+	if origin == "" {
+		log.Printf("WARNING: No origin provided, using RPID as fallback")
+		origin = "https://" + options.RPID
+	}
+
 	clientDataJSON := fmt.Sprintf(`{"type":"webauthn.get","challenge":"%s","origin":"%s"}`,
-		options.Challenge, options.RPID)
+		options.Challenge, origin)
 	clientDataBytes := []byte(clientDataJSON)
 
 	clientData := webauthnClientData{
@@ -419,7 +434,7 @@ func syscallGetAssertion(hwnd uintptr, options WebAuthnGetOptions) (WebAuthnAsse
 
 	// Create options
 	getAssertionOptions := webauthnAuthenticatorGetAssertionOptions{
-		dwVersion:                     4,
+		dwVersion:                     3, // Version 3 to match struct fields
 		dwTimeoutMilliseconds:         60000,
 		dwAuthenticatorAttachment:     WEBAUTHN_AUTHENTICATOR_ATTACHMENT_PLATFORM,
 		dwUserVerificationRequirement: WEBAUTHN_USER_VERIFICATION_REQUIREMENT_PREFERRED,

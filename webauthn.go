@@ -4,12 +4,18 @@
 package webview2
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/asn1"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"sync"
 	"time"
 )
@@ -61,6 +67,7 @@ type WebAuthnCreateOptions struct {
 	ExcludeCredentials     []string               `json:"excludeCredentials,omitempty"`
 	Timeout                int                    `json:"timeout,omitempty"`
 	Attestation            string                 `json:"attestation,omitempty"`
+	Origin                 string                 `json:"origin,omitempty"` // Page origin for clientDataJSON
 }
 
 // WebAuthnGetOptions represents the options for getting an assertion
@@ -70,6 +77,7 @@ type WebAuthnGetOptions struct {
 	AllowCredentials []string `json:"allowCredentials,omitempty"`
 	Timeout          int      `json:"timeout,omitempty"`
 	UserVerification string   `json:"userVerification,omitempty"`
+	Origin           string   `json:"origin,omitempty"` // Page origin for clientDataJSON
 }
 
 // RelyingParty represents the relying party information
@@ -306,32 +314,57 @@ func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (We
 	}
 	credIDBase64 := base64URLEncode(credentialID)
 
-	// Generate key pair (simplified - in production use proper COSE encoding)
-	privateKey := make([]byte, 32)
-	if _, err := randomBytes(privateKey); err != nil {
-		return WebAuthnCredential{}, err
+	// Generate ECDSA P-256 key pair
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return WebAuthnCredential{}, fmt.Errorf("failed to generate key pair: %w", err)
 	}
 
-	publicKey := make([]byte, 65) // Mock ECDSA P-256 public key
-	if _, err := randomBytes(publicKey); err != nil {
-		return WebAuthnCredential{}, err
+	// Encode keys for storage
+	privateKeyBytes := encodeECDSAPrivateKey(privateKey)
+	publicKeyBytes := encodeCOSEPublicKey(&privateKey.PublicKey)
+
+	// Use provided origin or fallback to localhost
+	origin := options.Origin
+	if origin == "" {
+		origin = "http://localhost"
 	}
 
 	// Create client data JSON
 	clientData := map[string]interface{}{
 		"type":      "webauthn.create",
 		"challenge": options.Challenge,
-		"origin":    "http://localhost",
+		"origin":    origin,
 	}
 	clientDataJSON, _ := json.Marshal(clientData)
 	clientDataBase64 := base64URLEncode(clientDataJSON)
 
-	// Create attestation object (simplified)
+	// Create authenticator data
+	// RP ID hash (32 bytes) + flags (1 byte) + counter (4 bytes) = 37 bytes minimum
+	rpIDHash := sha256.Sum256([]byte(options.RP.ID))
 	authData := make([]byte, 37)
-	// RP ID hash would go here
-	authData[32] = 0x41 // Flags: UP + AT
-	attestationObj := append(authData, credentialID...)
-	attestationObj = append(attestationObj, publicKey...)
+	copy(authData[0:32], rpIDHash[:])
+	authData[32] = 0x45 // Flags: UP (0x01) + UV (0x04) + AT (0x40)
+
+	// For attestation, we need to append: AAGUID (16 bytes) + credID length (2 bytes) + credID + public key
+	aaguid := make([]byte, 16) // All zeros for this implementation
+	authData = append(authData, aaguid...)
+
+	// Credential ID length (big-endian uint16)
+	credIDLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(credIDLen, uint16(len(credentialID)))
+	authData = append(authData, credIDLen...)
+
+	// Credential ID
+	authData = append(authData, credentialID...)
+
+	// COSE-encoded public key
+	authData = append(authData, publicKeyBytes...)
+
+	// Create attestation object (CBOR-encoded)
+	// For simplicity, we'll use "none" attestation format
+	// In production, use proper CBOR encoding
+	attestationObj := createAttestationObject(authData)
 	attestationBase64 := base64URLEncode(attestationObj)
 
 	// Store credential
@@ -340,8 +373,8 @@ func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (We
 		RPID:       options.RP.ID,
 		UserID:     options.User.ID,
 		UserName:   options.User.Name,
-		PrivateKey: privateKey,
-		PublicKey:  publicKey,
+		PrivateKey: privateKeyBytes,
+		PublicKey:  publicKeyBytes,
 		SignCount:  0,
 		CreatedAt:  time.Now(),
 	}
@@ -349,6 +382,8 @@ func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (We
 	if err := b.store.save(cred); err != nil {
 		return WebAuthnCredential{}, err
 	}
+
+	log.Printf("Created credential with real ECDSA P-256 keypair (ID: %s...)", credIDBase64[:16])
 
 	return WebAuthnCredential{
 		ID:    credIDBase64,
@@ -359,6 +394,48 @@ func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (We
 			AttestationObject: attestationBase64,
 		},
 	}, nil
+}
+
+// createAttestationObject creates a CBOR-encoded attestation object
+func createAttestationObject(authData []byte) []byte {
+	// Simple CBOR encoding for attestation object with "none" format
+	// {
+	//   "fmt": "none",
+	//   "authData": <bytes>,
+	//   "attStmt": {}
+	// }
+
+	// Manual CBOR encoding
+	result := []byte{0xa3} // map(3)
+
+	// "fmt" key
+	result = append(result, 0x63) // text(3)
+	result = append(result, []byte("fmt")...)
+	result = append(result, 0x64) // text(4)
+	result = append(result, []byte("none")...)
+
+	// "authData" key
+	result = append(result, 0x68) // text(8)
+	result = append(result, []byte("authData")...)
+	// authData bytes
+	if len(authData) < 24 {
+		result = append(result, byte(0x40|len(authData))) // bytes(n)
+	} else if len(authData) < 256 {
+		result = append(result, 0x58, byte(len(authData))) // bytes(n)
+	} else {
+		result = append(result, 0x59) // bytes(uint16)
+		lenBytes := make([]byte, 2)
+		binary.BigEndian.PutUint16(lenBytes, uint16(len(authData)))
+		result = append(result, lenBytes...)
+	}
+	result = append(result, authData...)
+
+	// "attStmt" key
+	result = append(result, 0x67) // text(7)
+	result = append(result, []byte("attStmt")...)
+	result = append(result, 0xa0) // empty map
+
+	return result
 }
 
 // handleGetInternal implements assertion using internal storage
@@ -392,25 +469,30 @@ func (b *WebAuthnBridge) handleGetInternal(options WebAuthnGetOptions) (WebAuthn
 		return WebAuthnAssertion{}, errors.New("no matching credential found")
 	}
 
+	// Use provided origin or fallback to localhost
+	origin := options.Origin
+	if origin == "" {
+		origin = "http://localhost"
+	}
+
 	// Create client data JSON
 	clientData := map[string]interface{}{
 		"type":      "webauthn.get",
 		"challenge": options.Challenge,
-		"origin":    "http://localhost",
+		"origin":    origin,
 	}
 	clientDataJSON, _ := json.Marshal(clientData)
 	clientDataBase64 := base64URLEncode(clientDataJSON)
 
 	// Create authenticator data
+	rpIDHash := sha256.Sum256([]byte(options.RPID))
 	authData := make([]byte, 37)
-	authData[32] = 0x01 // Flags: UP
+	copy(authData[0:32], rpIDHash[:])
+	authData[32] = 0x05 // Flags: UP (0x01) + UV (0x04)
 
 	// Update sign count
 	cred.SignCount++
-	authData[33] = byte(cred.SignCount >> 24)
-	authData[34] = byte(cred.SignCount >> 16)
-	authData[35] = byte(cred.SignCount >> 8)
-	authData[36] = byte(cred.SignCount)
+	binary.BigEndian.PutUint32(authData[33:37], cred.SignCount)
 
 	if err := b.store.save(cred); err != nil {
 		return WebAuthnAssertion{}, err
@@ -418,12 +500,23 @@ func (b *WebAuthnBridge) handleGetInternal(options WebAuthnGetOptions) (WebAuthn
 
 	authDataBase64 := base64URLEncode(authData)
 
-	// Create signature (simplified)
-	signature := make([]byte, 64)
-	if _, err := randomBytes(signature); err != nil {
-		return WebAuthnAssertion{}, err
+	// Decode private key from storage
+	privateKey, err := decodeECDSAPrivateKey(cred.PrivateKey)
+	if err != nil {
+		return WebAuthnAssertion{}, fmt.Errorf("failed to decode private key: %w", err)
+	}
+
+	// Create signature over authenticator data + client data hash
+	clientDataHash := sha256.Sum256(clientDataJSON)
+	signedData := append(authData, clientDataHash[:]...)
+
+	signature, err := signWithECDSA(privateKey, signedData)
+	if err != nil {
+		return WebAuthnAssertion{}, fmt.Errorf("failed to sign assertion: %w", err)
 	}
 	signatureBase64 := base64URLEncode(signature)
+
+	log.Printf("Created assertion with real ECDSA signature (cred ID: %s...)", cred.ID[:16])
 
 	return WebAuthnAssertion{
 		ID:    cred.ID,
@@ -487,6 +580,94 @@ func base64URLDecode(s string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(s)
 }
 
+// encodeCOSEPublicKey encodes an ECDSA P-256 public key in COSE format
+// COSE Key format according to RFC 8152
+func encodeCOSEPublicKey(pubKey *ecdsa.PublicKey) []byte {
+	// COSE Key for ES256 (ECDSA with P-256 and SHA-256)
+	// This is a CBOR-encoded map with the following structure:
+	// {
+	//   1: 2,        // kty: EC2 key type
+	//   3: -7,       // alg: ES256
+	//   -1: 1,       // crv: P-256
+	//   -2: x,       // x coordinate (32 bytes)
+	//   -3: y        // y coordinate (32 bytes)
+	// }
+
+	// For simplicity, we'll create a minimal CBOR encoding
+	// In production, use a proper CBOR library like github.com/fxamacker/cbor
+
+	x := pubKey.X.Bytes()
+	y := pubKey.Y.Bytes()
+
+	// Ensure coordinates are 32 bytes (pad with leading zeros if needed)
+	xBytes := make([]byte, 32)
+	yBytes := make([]byte, 32)
+	copy(xBytes[32-len(x):], x)
+	copy(yBytes[32-len(y):], y)
+
+	// Manual CBOR encoding for the COSE key
+	coseKey := []byte{
+		0xa5, // map(5)
+		0x01, // key 1 (kty)
+		0x02, // EC2 (2)
+		0x03, // key 3 (alg)
+		0x26, // -7 (ES256)
+		0x20, // key -1 (crv)
+		0x01, // P-256 (1)
+		0x21, // key -2 (x coordinate)
+		0x58, 0x20, // bytes(32)
+	}
+	coseKey = append(coseKey, xBytes...)
+	coseKey = append(coseKey, 0x22) // key -3 (y coordinate)
+	coseKey = append(coseKey, 0x58, 0x20) // bytes(32)
+	coseKey = append(coseKey, yBytes...)
+
+	return coseKey
+}
+
+// encodeECDSAPrivateKey encodes an ECDSA private key for storage
+func encodeECDSAPrivateKey(privKey *ecdsa.PrivateKey) []byte {
+	// Store the D value (private key scalar)
+	d := privKey.D.Bytes()
+	// Ensure it's 32 bytes for P-256
+	privateKeyBytes := make([]byte, 32)
+	copy(privateKeyBytes[32-len(d):], d)
+	return privateKeyBytes
+}
+
+// decodeECDSAPrivateKey decodes a stored ECDSA private key
+func decodeECDSAPrivateKey(keyBytes []byte) (*ecdsa.PrivateKey, error) {
+	if len(keyBytes) != 32 {
+		return nil, errors.New("invalid private key length")
+	}
+
+	privKey := new(ecdsa.PrivateKey)
+	privKey.PublicKey.Curve = elliptic.P256()
+	privKey.D = new(big.Int).SetBytes(keyBytes)
+
+	// Derive public key from private key
+	privKey.PublicKey.X, privKey.PublicKey.Y = elliptic.P256().ScalarBaseMult(keyBytes)
+
+	return privKey, nil
+}
+
+// signWithECDSA creates an ECDSA signature over the data
+func signWithECDSA(privKey *ecdsa.PrivateKey, data []byte) ([]byte, error) {
+	hash := sha256.Sum256(data)
+
+	r, s, err := ecdsa.Sign(rand.Reader, privKey, hash[:])
+	if err != nil {
+		return nil, err
+	}
+
+	// Encode signature in ASN.1 DER format (standard for WebAuthn)
+	type ECDSASignature struct {
+		R, S *big.Int
+	}
+	sig := ECDSASignature{R: r, S: s}
+	return asn1.Marshal(sig)
+}
+
 // randomBytes fills the byte slice with random data
 func randomBytes(b []byte) (int, error) {
 	return rand.Read(b)
@@ -532,7 +713,8 @@ const webauthnBridgeJS = `
 				name: options.user.name,
 				displayName: options.user.displayName
 			},
-			pubKeyCredParams: options.pubKeyCredParams || []
+			pubKeyCredParams: options.pubKeyCredParams || [],
+			origin: window.location.origin  // Pass actual page origin
 		};
 
 		if (options.authenticatorSelection) {
@@ -558,7 +740,8 @@ const webauthnBridgeJS = `
 			challenge: arrayBufferToBase64Url(options.challenge),
 			rpId: options.rpId || '',
 			timeout: options.timeout || 60000,
-			userVerification: options.userVerification || 'preferred'
+			userVerification: options.userVerification || 'preferred',
+			origin: window.location.origin  // Pass actual page origin
 		};
 
 		if (options.allowCredentials && options.allowCredentials.length > 0) {
