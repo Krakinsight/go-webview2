@@ -1,13 +1,10 @@
 package main
 
 import (
-	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"log"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/Krakinsight/go-webview2"
 )
@@ -29,200 +26,84 @@ func main() {
 	}
 	defer w.Destroy()
 
-	// Create in-memory credential store
-	store := webview2.NewInMemoryCredentialStore()
-
 	// Enable WebAuthn bridge
 	bridge := w.EnableWebAuthnBridge()
-	bridge.SetCredentialStore(store)
 	bridge.SetTimeout(60 * time.Second)
 
-	// Set up credential creation handler
-	bridge.SetCreateHandler(func(ctx context.Context, opts webview2.WebAuthnCreateOptions) (webview2.WebAuthnCredential, error) {
-		return handleCreateCredential(ctx, opts, store)
-	})
+	// Case 1: Set OnUserApproval to nil for automatic Windows Hello fallback
+	// Case 2: Set OnUserApproval to a custom function for approval dialog
+	// Uncomment one of the following to test different scenarios:
 
-	// Set up credential get/assertion handler
-	bridge.SetGetHandler(func(ctx context.Context, opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAssertion, error) {
-		return handleGetCredential(ctx, opts, store)
-	})
+	// SCENARIO 1: Automatic Windows Hello (OnUserApproval == nil)
+	// bridge.OnUserApproval = nil
+	// log.Println("Mode: Automatic Windows Hello (OnUserApproval == nil)")
 
-	// Set up availability check handler
-	bridge.SetIsAvailableHandler(func() bool {
-		return true // WebAuthn is always available in this demo
-	})
+	// SCENARIO 2: Custom approval dialog
+	bridge.OnUserApproval = func(op webview2.WebAuthnOperation) bool {
+		log.Printf("Approval requested: Type=%s, RPID=%s, RPName=%s", op.Type, op.RPID, op.RPName)
+		if op.Type == "create" {
+			log.Printf("  User: Name=%s, DisplayName=%s", op.User.Name, op.User.DisplayName)
+		}
+
+		// Show native dialog using Windows MessageBox
+		result := messageBox(
+			0,
+			"Allow WebAuthn operation?\n\n"+
+				"Type: "+op.Type+"\n"+
+				"RP: "+op.RPName+" ("+op.RPID+")\n"+
+				(func() string {
+					if op.Type == "create" {
+						return "User: " + op.User.DisplayName + " (" + op.User.Name + ")"
+					}
+					return ""
+				})(),
+			"WebAuthn Approval",
+			0x00000001|0x00000020, // MB_OKCANCEL | MB_ICONQUESTION
+		)
+
+		approved := result == 1 // IDOK
+		if approved {
+			log.Println("✓ User approved - using internal implementation")
+		} else {
+			log.Println("✗ User denied - falling back to Windows Hello")
+		}
+		return approved
+	}
+	log.Println("Mode: Custom approval dialog (OnUserApproval set)")
 
 	// Log Windows Hello availability
 	if webview2.IsWebAuthnDLLAvailable() {
 		version, _ := webview2.GetWebAuthnAPIVersion()
 		log.Printf("Windows Hello is available (WebAuthn API version: %d)", version)
 	} else {
-		log.Printf("Windows Hello (webauthn.dll) not available - using mock implementation")
+		log.Printf("Windows Hello (webauthn.dll) not available")
 	}
 
 	w.SetHtml(demoHTML)
 	w.Run()
 }
 
-func handleCreateCredential(ctx context.Context, opts webview2.WebAuthnCreateOptions, store webview2.CredentialStore) (webview2.WebAuthnCredential, error) {
-	log.Printf("Creating credential for user: %s (display: %s)", opts.User.Name, opts.User.DisplayName)
-	log.Printf("Relying Party: %s", opts.RP.Name)
+// messageBox wraps Windows MessageBox API for approval dialogs
+func messageBox(hwnd uintptr, text, caption string, flags uint32) int {
+	user32 := syscall.MustLoadDLL("user32.dll")
+	messageBoxW := user32.MustFindProc("MessageBoxW")
 
-	// Check for context cancellation
-	select {
-	case <-ctx.Done():
-		return webview2.WebAuthnCredential{}, ctx.Err()
-	default:
-	}
+	textUTF16, _ := syscall.UTF16PtrFromString(text)
+	captionUTF16, _ := syscall.UTF16PtrFromString(caption)
 
-	// Generate a random credential ID
-	credentialID := make([]byte, 32)
-	if _, err := rand.Read(credentialID); err != nil {
-		return webview2.WebAuthnCredential{}, err
-	}
-	credIDBase64 := base64.RawURLEncoding.EncodeToString(credentialID)
+	ret, _, _ := messageBoxW.Call(
+		hwnd,
+		uintptr(unsafePointer(textUTF16)),
+		uintptr(unsafePointer(captionUTF16)),
+		uintptr(flags),
+	)
 
-	// For demo purposes, generate a mock public key (COSE format would be used in production)
-	publicKey := make([]byte, 65) // Mock ECDSA P-256 public key
-	if _, err := rand.Read(publicKey); err != nil {
-		return webview2.WebAuthnCredential{}, err
-	}
-
-	// Create client data JSON
-	clientData := map[string]interface{}{
-		"type":      "webauthn.create",
-		"challenge": opts.Challenge,
-		"origin":    "http://localhost",
-	}
-	clientDataJSON, _ := json.Marshal(clientData)
-	clientDataBase64 := base64.RawURLEncoding.EncodeToString(clientDataJSON)
-
-	// Create a mock attestation object (simplified)
-	// In a real implementation, this would be a CBOR-encoded attestation
-	authData := make([]byte, 37) // RP ID hash (32) + flags (1) + counter (4)
-	rpIDHash := sha256.Sum256([]byte(opts.RP.Name))
-	copy(authData[0:32], rpIDHash[:])
-	authData[32] = 0x41 // Flags: UP (user present) and AT (attested credential data)
-
-	// For demo, create a simplified attestation object
-	attestationObj := append(authData, credentialID...)
-	attestationObj = append(attestationObj, publicKey...)
-	attestationBase64 := base64.RawURLEncoding.EncodeToString(attestationObj)
-
-	// Store the credential
-	storedCred := webview2.StoredCredential{
-		ID:        credIDBase64,
-		RPID:      opts.RP.ID,
-		UserID:    opts.User.ID,
-		UserName:  opts.User.Name,
-		PublicKey: publicKey,
-		SignCount: 0,
-		CreatedAt: time.Now(),
-	}
-
-	if err := store.Save(storedCred); err != nil {
-		return webview2.WebAuthnCredential{}, err
-	}
-
-	log.Printf("✓ Credential created successfully (ID: %s...)", credIDBase64[:8])
-
-	return webview2.WebAuthnCredential{
-		ID:    credIDBase64,
-		RawID: credIDBase64,
-		Type:  "public-key",
-		Response: webview2.CredentialResponse{
-			ClientDataJSON:    clientDataBase64,
-			AttestationObject: attestationBase64,
-		},
-	}, nil
+	return int(ret)
 }
 
-func handleGetCredential(ctx context.Context, opts webview2.WebAuthnGetOptions, store webview2.CredentialStore) (webview2.WebAuthnAssertion, error) {
-	log.Printf("Getting credential assertion for RP: %s", opts.RPID)
-
-	// Check for context cancellation
-	select {
-	case <-ctx.Done():
-		return webview2.WebAuthnAssertion{}, ctx.Err()
-	default:
-	}
-
-	// Find matching credentials
-	var matchedCred webview2.StoredCredential
-	var found bool
-
-	if len(opts.AllowCredentials) > 0 {
-		// Look for a specific credential
-		for _, allowedID := range opts.AllowCredentials {
-			cred, err := store.Load(allowedID)
-			if err == nil {
-				matchedCred = cred
-				found = true
-				break
-			}
-		}
-	} else {
-		// Return any credential for this RP
-		creds, err := store.LoadAll(opts.RPID)
-		if err == nil && len(creds) > 0 {
-			matchedCred = creds[0]
-			found = true
-		}
-	}
-
-	if !found {
-		log.Printf("✗ No matching credential found")
-		return webview2.WebAuthnAssertion{}, nil
-	}
-
-	log.Printf("✓ Found credential: %s (user: %s)", matchedCred.ID[:8]+"...", matchedCred.UserName)
-
-	// Create client data JSON
-	clientData := map[string]interface{}{
-		"type":      "webauthn.get",
-		"challenge": opts.Challenge,
-		"origin":    "http://localhost",
-	}
-	clientDataJSON, _ := json.Marshal(clientData)
-	clientDataBase64 := base64.RawURLEncoding.EncodeToString(clientDataJSON)
-
-	// Create authenticator data
-	authData := make([]byte, 37)
-	rpIDHash := sha256.Sum256([]byte(opts.RPID))
-	copy(authData[0:32], rpIDHash[:])
-	authData[32] = 0x01 // Flags: UP (user present)
-
-	// Update sign count
-	matchedCred.SignCount++
-	if err := store.Save(matchedCred); err != nil {
-		return webview2.WebAuthnAssertion{}, err
-	}
-
-	authData[33] = byte(matchedCred.SignCount >> 24)
-	authData[34] = byte(matchedCred.SignCount >> 16)
-	authData[35] = byte(matchedCred.SignCount >> 8)
-	authData[36] = byte(matchedCred.SignCount)
-
-	authDataBase64 := base64.RawURLEncoding.EncodeToString(authData)
-
-	// Create a mock signature (in real implementation, sign with private key)
-	signature := make([]byte, 64) // Mock ECDSA signature
-	if _, err := rand.Read(signature); err != nil {
-		return webview2.WebAuthnAssertion{}, err
-	}
-	signatureBase64 := base64.RawURLEncoding.EncodeToString(signature)
-
-	return webview2.WebAuthnAssertion{
-		ID:    matchedCred.ID,
-		RawID: matchedCred.ID,
-		Type:  "public-key",
-		Response: webview2.AssertionResponse{
-			ClientDataJSON:    clientDataBase64,
-			AuthenticatorData: authDataBase64,
-			Signature:         signatureBase64,
-			UserHandle:        matchedCred.UserID,
-		},
-	}, nil
+// unsafePointer converts a pointer to unsafe.Pointer
+func unsafePointer(p *uint16) uintptr {
+	return uintptr(unsafe.Pointer(p))
 }
 
 const demoHTML = `
@@ -415,8 +296,8 @@ const demoHTML = `
 		<div class="content">
 			<div class="info-box">
 				<strong>ℹ️ About:</strong> This demo shows WebAuthn working through a JavaScript-to-Go bridge.
-				Since WebView2's sandbox blocks direct access to Windows Hello/FIDO2, the bridge routes
-				credential operations through Go handlers.
+				The bridge supports two modes: automatic Windows Hello fallback (OnUserApproval == nil)
+				or custom approval dialog with internal/Windows Hello choice.
 			</div>
 
 			<div class="section">
@@ -430,7 +311,7 @@ const demoHTML = `
 				<h2>1. Register New Credential</h2>
 				<div class="form-group">
 					<label>Username:</label>
-					<input type="text" id="username" value="testuser" />
+					<input type="text" id="username" value="testuser@example.com" />
 				</div>
 				<div class="form-group">
 					<label>Display Name:</label>
@@ -463,26 +344,6 @@ const demoHTML = `
 			entry.textContent = '[' + timestamp + '] ' + message;
 			logDiv.appendChild(entry);
 			logDiv.scrollTop = logDiv.scrollHeight;
-		}
-
-		function arrayBufferToBase64Url(buffer) {
-			const bytes = new Uint8Array(buffer);
-			let binary = '';
-			for (let i = 0; i < bytes.byteLength; i++) {
-				binary += String.fromCharCode(bytes[i]);
-			}
-			return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-		}
-
-		function base64UrlToArrayBuffer(base64url) {
-			const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
-			const padding = '='.repeat((4 - base64.length % 4) % 4);
-			const binary = atob(base64 + padding);
-			const bytes = new Uint8Array(binary.length);
-			for (let i = 0; i < binary.length; i++) {
-				bytes[i] = binary.charCodeAt(i);
-			}
-			return bytes.buffer;
 		}
 
 		// Check WebAuthn availability
@@ -544,10 +405,11 @@ const demoHTML = `
 						{ type: "public-key", alg: -257 } // RS256
 					],
 					authenticatorSelection: {
+						authenticatorAttachment: "platform",
 						userVerification: "preferred"
 					},
 					timeout: 60000,
-					attestation: "direct"
+					attestation: "none"
 				};
 
 				log('Calling navigator.credentials.create()...', 'info');

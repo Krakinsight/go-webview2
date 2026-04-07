@@ -6,7 +6,20 @@ package webview2
 import (
 	"errors"
 	"sync"
+	"time"
 )
+
+// StoredCredential represents a WebAuthn credential stored by InMemoryCredentialStore
+// For the internal encrypted storage, see storedCredential in webauthn_store_internal.go
+type StoredCredential struct {
+	ID         string
+	RPID       string
+	UserID     string
+	UserName   string
+	PublicKey  []byte
+	SignCount  uint32
+	CreatedAt  time.Time
+}
 
 // InMemoryCredentialStore is a simple in-memory implementation of CredentialStore.
 // This is suitable for testing and demos but should not be used in production

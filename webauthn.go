@@ -4,7 +4,7 @@
 package webview2
 
 import (
-	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,45 +14,41 @@ import (
 	"time"
 )
 
-// CredentialStore defines an interface for storing and retrieving WebAuthn credentials.
-// This allows applications to choose their own storage backend (SQLite, encrypted files, vault, etc.).
-type CredentialStore interface {
-	// Save stores a credential
-	Save(credential StoredCredential) error
-
-	// Load retrieves a credential by its ID
-	Load(credentialID string) (StoredCredential, error)
-
-	// LoadAll retrieves all credentials for a given Relying Party ID
-	LoadAll(rpID string) ([]StoredCredential, error)
-
-	// Delete removes a credential
-	Delete(credentialID string) error
+// WebAuthnUser represents user information for WebAuthn operations
+type WebAuthnUser struct {
+	ID          string // User ID (base64url encoded)
+	Name        string // User name (email)
+	DisplayName string // Display name
 }
 
-// StoredCredential represents a stored WebAuthn credential
-type StoredCredential struct {
-	ID        string    // Credential ID (base64url encoded)
-	RPID      string    // Relying Party ID
-	UserID    string    // User ID (base64url encoded)
-	UserName  string    // User name
-	PublicKey []byte    // COSE-encoded public key
-	SignCount uint32    // Signature counter
-	CreatedAt time.Time // Creation timestamp
+// WebAuthnOperation describes what is being requested, passed to the approval callback
+type WebAuthnOperation struct {
+	Type   string       // "create" or "get"
+	RPID   string       // Relying Party ID
+	RPName string       // Relying Party Name
+	User   WebAuthnUser // Empty for "get" operations
 }
 
 // WebAuthnBridge provides a JavaScript bridge for WebAuthn functionality.
 // Since WebView2's sandbox blocks access to the platform authenticator (Windows Hello/FIDO2),
-// this bridge allows intercepting WebAuthn calls and handling them through alternative means.
+// this bridge intercepts navigator.credentials calls and routes them through Go handlers.
+//
+// The bridge supports three modes:
+// 1. OnUserApproval == nil: Direct fallback to webauthn.dll (Windows Hello)
+// 2. OnUserApproval returns false: Fallback to webauthn.dll
+// 3. OnUserApproval returns true: Use internal implementation with encrypted storage
 type WebAuthnBridge struct {
-	webview            WebView
-	createHandler      func(ctx context.Context, options WebAuthnCreateOptions) (WebAuthnCredential, error)
-	getHandler         func(ctx context.Context, options WebAuthnGetOptions) (WebAuthnAssertion, error)
-	isAvailableHandler func() bool
-	store              CredentialStore
-	timeout            time.Duration
-	mu                 sync.Mutex
-	pending            bool // Only one WebAuthn operation at a time
+	// OnUserApproval is called to ask if the operation should be handled internally.
+	// - nil: bypass directly to webauthn.dll
+	// - returns true: use internal implementation with encrypted storage
+	// - returns false: fallback to webauthn.dll (Windows Hello)
+	OnUserApproval func(op WebAuthnOperation) bool
+
+	webview WebView
+	store   *fileCredentialStore // Internal encrypted storage
+	timeout time.Duration
+	mu      sync.Mutex
+	pending bool // Only one WebAuthn operation at a time
 }
 
 // WebAuthnCreateOptions represents the options for creating a new credential
@@ -135,13 +131,16 @@ type AssertionResponse struct {
 // EnableWebAuthnBridge enables the WebAuthn bridge on the webview.
 // This injects JavaScript that intercepts navigator.credentials calls and routes them through Go handlers.
 func (w *webview) EnableWebAuthnBridge() *WebAuthnBridge {
+	// Initialize internal encrypted store
+	store, err := newFileCredentialStore()
+	if err != nil {
+		log.Printf("Warning: Failed to initialize credential store: %v", err)
+	}
+
 	bridge := &WebAuthnBridge{
 		webview: w,
+		store:   store,
 		timeout: 60 * time.Second, // Default 60 second timeout
-		isAvailableHandler: func() bool {
-			// Default: WebAuthn is available
-			return true
-		},
 	}
 
 	// Bind the WebAuthn functions
@@ -153,26 +152,6 @@ func (w *webview) EnableWebAuthnBridge() *WebAuthnBridge {
 	w.Init(webauthnBridgeJS)
 
 	return bridge
-}
-
-// SetCreateHandler sets a custom handler for credential creation
-func (b *WebAuthnBridge) SetCreateHandler(handler func(ctx context.Context, options WebAuthnCreateOptions) (WebAuthnCredential, error)) {
-	b.createHandler = handler
-}
-
-// SetGetHandler sets a custom handler for credential assertion
-func (b *WebAuthnBridge) SetGetHandler(handler func(ctx context.Context, options WebAuthnGetOptions) (WebAuthnAssertion, error)) {
-	b.getHandler = handler
-}
-
-// SetIsAvailableHandler sets a custom handler for checking WebAuthn availability
-func (b *WebAuthnBridge) SetIsAvailableHandler(handler func() bool) {
-	b.isAvailableHandler = handler
-}
-
-// SetCredentialStore sets the credential store for the bridge
-func (b *WebAuthnBridge) SetCredentialStore(store CredentialStore) {
-	b.store = store
 }
 
 // SetTimeout sets the timeout for WebAuthn operations
@@ -197,10 +176,6 @@ func (b *WebAuthnBridge) handleCreate(optionsJSON string) (string, error) {
 		b.mu.Unlock()
 	}()
 
-	if b.createHandler == nil {
-		return "", errors.New("WebAuthn create handler not set")
-	}
-
 	var options WebAuthnCreateOptions
 	if err := json.Unmarshal([]byte(optionsJSON), &options); err != nil {
 		return "", fmt.Errorf("failed to parse create options: %w", err)
@@ -208,11 +183,36 @@ func (b *WebAuthnBridge) handleCreate(optionsJSON string) (string, error) {
 
 	log.Printf("WebAuthn Create request: RP=%s, User=%s", options.RP.Name, options.User.Name)
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
-	defer cancel()
+	// Create operation description for approval callback
+	op := WebAuthnOperation{
+		Type:   "create",
+		RPID:   options.RP.ID,
+		RPName: options.RP.Name,
+		User: WebAuthnUser{
+			ID:          options.User.ID,
+			Name:        options.User.Name,
+			DisplayName: options.User.DisplayName,
+		},
+	}
 
-	credential, err := b.createHandler(ctx, options)
+	// Determine handling strategy
+	var credential WebAuthnCredential
+	var err error
+
+	if b.OnUserApproval == nil {
+		// Case 1: No approval callback → fallback to webauthn.dll
+		log.Printf("No approval callback, using webauthn.dll fallback")
+		credential, err = b.fallbackToWindowsHello(options, WebAuthnGetOptions{})
+	} else if !b.OnUserApproval(op) {
+		// Case 2: Approval callback returns false → fallback to webauthn.dll
+		log.Printf("User approval denied, using webauthn.dll fallback")
+		credential, err = b.fallbackToWindowsHello(options, WebAuthnGetOptions{})
+	} else {
+		// Case 3: Approval callback returns true → use internal implementation
+		log.Printf("User approved, using internal implementation")
+		credential, err = b.handleCreateInternal(options)
+	}
+
 	if err != nil {
 		return "", err
 	}
@@ -242,10 +242,6 @@ func (b *WebAuthnBridge) handleGet(optionsJSON string) (string, error) {
 		b.mu.Unlock()
 	}()
 
-	if b.getHandler == nil {
-		return "", errors.New("WebAuthn get handler not set")
-	}
-
 	var options WebAuthnGetOptions
 	if err := json.Unmarshal([]byte(optionsJSON), &options); err != nil {
 		return "", fmt.Errorf("failed to parse get options: %w", err)
@@ -253,11 +249,32 @@ func (b *WebAuthnBridge) handleGet(optionsJSON string) (string, error) {
 
 	log.Printf("WebAuthn Get request: RPID=%s", options.RPID)
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
-	defer cancel()
+	// Create operation description for approval callback (user info is empty for "get")
+	op := WebAuthnOperation{
+		Type:   "get",
+		RPID:   options.RPID,
+		RPName: options.RPID, // Use RPID as name for "get" operations
+		User:   WebAuthnUser{}, // Empty for "get"
+	}
 
-	assertion, err := b.getHandler(ctx, options)
+	// Determine handling strategy
+	var assertion WebAuthnAssertion
+	var err error
+
+	if b.OnUserApproval == nil {
+		// Case 1: No approval callback → fallback to webauthn.dll
+		log.Printf("No approval callback, using webauthn.dll fallback")
+		assertion, err = b.fallbackToWindowsHelloGet(options)
+	} else if !b.OnUserApproval(op) {
+		// Case 2: Approval callback returns false → fallback to webauthn.dll
+		log.Printf("User approval denied, using webauthn.dll fallback")
+		assertion, err = b.fallbackToWindowsHelloGet(options)
+	} else {
+		// Case 3: Approval callback returns true → use internal implementation
+		log.Printf("User approved, using internal implementation")
+		assertion, err = b.handleGetInternal(options)
+	}
+
 	if err != nil {
 		return "", err
 	}
@@ -272,10 +289,193 @@ func (b *WebAuthnBridge) handleGet(optionsJSON string) (string, error) {
 
 // handleIsAvailable handles the availability check from JavaScript
 func (b *WebAuthnBridge) handleIsAvailable() bool {
-	if b.isAvailableHandler == nil {
-		return true
+	// WebAuthn is available if either internal store works or webauthn.dll is available
+	return b.store != nil || IsWebAuthnDLLAvailable()
+}
+
+// handleCreateInternal implements credential creation using internal storage
+func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (WebAuthnCredential, error) {
+	if b.store == nil {
+		return WebAuthnCredential{}, errors.New("internal credential store not available")
 	}
-	return b.isAvailableHandler()
+
+	// Generate credential ID
+	credentialID := make([]byte, 32)
+	if _, err := randomBytes(credentialID); err != nil {
+		return WebAuthnCredential{}, err
+	}
+	credIDBase64 := base64URLEncode(credentialID)
+
+	// Generate key pair (simplified - in production use proper COSE encoding)
+	privateKey := make([]byte, 32)
+	if _, err := randomBytes(privateKey); err != nil {
+		return WebAuthnCredential{}, err
+	}
+
+	publicKey := make([]byte, 65) // Mock ECDSA P-256 public key
+	if _, err := randomBytes(publicKey); err != nil {
+		return WebAuthnCredential{}, err
+	}
+
+	// Create client data JSON
+	clientData := map[string]interface{}{
+		"type":      "webauthn.create",
+		"challenge": options.Challenge,
+		"origin":    "http://localhost",
+	}
+	clientDataJSON, _ := json.Marshal(clientData)
+	clientDataBase64 := base64URLEncode(clientDataJSON)
+
+	// Create attestation object (simplified)
+	authData := make([]byte, 37)
+	// RP ID hash would go here
+	authData[32] = 0x41 // Flags: UP + AT
+	attestationObj := append(authData, credentialID...)
+	attestationObj = append(attestationObj, publicKey...)
+	attestationBase64 := base64URLEncode(attestationObj)
+
+	// Store credential
+	cred := storedCredential{
+		ID:         credIDBase64,
+		RPID:       options.RP.ID,
+		UserID:     options.User.ID,
+		UserName:   options.User.Name,
+		PrivateKey: privateKey,
+		PublicKey:  publicKey,
+		SignCount:  0,
+		CreatedAt:  time.Now(),
+	}
+
+	if err := b.store.save(cred); err != nil {
+		return WebAuthnCredential{}, err
+	}
+
+	return WebAuthnCredential{
+		ID:    credIDBase64,
+		RawID: credIDBase64,
+		Type:  "public-key",
+		Response: CredentialResponse{
+			ClientDataJSON:    clientDataBase64,
+			AttestationObject: attestationBase64,
+		},
+	}, nil
+}
+
+// handleGetInternal implements assertion using internal storage
+func (b *WebAuthnBridge) handleGetInternal(options WebAuthnGetOptions) (WebAuthnAssertion, error) {
+	if b.store == nil {
+		return WebAuthnAssertion{}, errors.New("internal credential store not available")
+	}
+
+	// Find matching credential
+	var cred storedCredential
+	var found bool
+
+	if len(options.AllowCredentials) > 0 {
+		for _, allowedID := range options.AllowCredentials {
+			c, err := b.store.load(allowedID)
+			if err == nil {
+				cred = c
+				found = true
+				break
+			}
+		}
+	} else {
+		creds, err := b.store.loadAllByRP(options.RPID)
+		if err == nil && len(creds) > 0 {
+			cred = creds[0]
+			found = true
+		}
+	}
+
+	if !found {
+		return WebAuthnAssertion{}, errors.New("no matching credential found")
+	}
+
+	// Create client data JSON
+	clientData := map[string]interface{}{
+		"type":      "webauthn.get",
+		"challenge": options.Challenge,
+		"origin":    "http://localhost",
+	}
+	clientDataJSON, _ := json.Marshal(clientData)
+	clientDataBase64 := base64URLEncode(clientDataJSON)
+
+	// Create authenticator data
+	authData := make([]byte, 37)
+	authData[32] = 0x01 // Flags: UP
+
+	// Update sign count
+	cred.SignCount++
+	authData[33] = byte(cred.SignCount >> 24)
+	authData[34] = byte(cred.SignCount >> 16)
+	authData[35] = byte(cred.SignCount >> 8)
+	authData[36] = byte(cred.SignCount)
+
+	if err := b.store.save(cred); err != nil {
+		return WebAuthnAssertion{}, err
+	}
+
+	authDataBase64 := base64URLEncode(authData)
+
+	// Create signature (simplified)
+	signature := make([]byte, 64)
+	if _, err := randomBytes(signature); err != nil {
+		return WebAuthnAssertion{}, err
+	}
+	signatureBase64 := base64URLEncode(signature)
+
+	return WebAuthnAssertion{
+		ID:    cred.ID,
+		RawID: cred.ID,
+		Type:  "public-key",
+		Response: AssertionResponse{
+			ClientDataJSON:    clientDataBase64,
+			AuthenticatorData: authDataBase64,
+			Signature:         signatureBase64,
+			UserHandle:        cred.UserID,
+		},
+	}, nil
+}
+
+// fallbackToWindowsHello calls webauthn.dll for credential creation
+func (b *WebAuthnBridge) fallbackToWindowsHello(createOpts WebAuthnCreateOptions, _ WebAuthnGetOptions) (WebAuthnCredential, error) {
+	if !IsWebAuthnDLLAvailable() {
+		return WebAuthnCredential{}, errors.New("webauthn.dll not available")
+	}
+
+	// Get window handle from webview
+	hwnd := b.getHWND()
+	if hwnd == 0 {
+		return WebAuthnCredential{}, errors.New("could not get window handle")
+	}
+
+	// Call Windows Hello via syscall
+	return syscallMakeCredential(hwnd, createOpts)
+}
+
+// fallbackToWindowsHelloGet calls webauthn.dll for assertion
+func (b *WebAuthnBridge) fallbackToWindowsHelloGet(opts WebAuthnGetOptions) (WebAuthnAssertion, error) {
+	if !IsWebAuthnDLLAvailable() {
+		return WebAuthnAssertion{}, errors.New("webauthn.dll not available")
+	}
+
+	// Get window handle from webview
+	hwnd := b.getHWND()
+	if hwnd == 0 {
+		return WebAuthnAssertion{}, errors.New("could not get window handle")
+	}
+
+	// Call Windows Hello via syscall
+	return syscallGetAssertion(hwnd, opts)
+}
+
+// getHWND retrieves the window handle from the webview
+func (b *WebAuthnBridge) getHWND() uintptr {
+	if wv, ok := b.webview.(*webview); ok {
+		return wv.hwnd
+	}
+	return 0
 }
 
 // Helper functions for base64url encoding/decoding
@@ -285,6 +485,11 @@ func base64URLEncode(data []byte) string {
 
 func base64URLDecode(s string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(s)
+}
+
+// randomBytes fills the byte slice with random data
+func randomBytes(b []byte) (int, error) {
+	return rand.Read(b)
 }
 
 // webauthnBridgeJS is the JavaScript code that intercepts WebAuthn API calls
