@@ -52,8 +52,13 @@ type WebAuthnBridge struct {
 	// - returns false: fallback to webauthn.dll (Windows Hello)
 	OnUserApproval func(op WebAuthnOperation) bool
 
+	// Store is the credential storage implementation.
+	// If nil, a default encrypted file-based store will be created automatically.
+	// You can inject your own implementation by setting this field before calling
+	// EnableWebAuthnBridge or by setting it directly on the returned bridge.
+	Store CredentialStore
+
 	webview WebView
-	store   *fileCredentialStore // Internal encrypted storage
 	timeout time.Duration
 	mu      sync.Mutex
 	pending bool // Only one WebAuthn operation at a time
@@ -141,15 +146,8 @@ type AssertionResponse struct {
 // EnableWebAuthnBridge enables the WebAuthn bridge on the webview.
 // This injects JavaScript that intercepts navigator.credentials calls and routes them through Go handlers.
 func (w *webview) EnableWebAuthnBridge() *WebAuthnBridge {
-	// Initialize internal encrypted store
-	store, err := newFileCredentialStore()
-	if err != nil {
-		log.Printf("Warning: Failed to initialize credential store: %v", err)
-	}
-
 	bridge := &WebAuthnBridge{
 		webview: w,
-		store:   store,
 		timeout: 60 * time.Second, // Default 60 second timeout
 	}
 
@@ -167,6 +165,18 @@ func (w *webview) EnableWebAuthnBridge() *WebAuthnBridge {
 // SetTimeout sets the timeout for WebAuthn operations
 func (b *WebAuthnBridge) SetTimeout(timeout time.Duration) {
 	b.timeout = timeout
+}
+
+// ensureStore initializes the default file-based store if Store is nil
+func (b *WebAuthnBridge) ensureStore() error {
+	if b.Store == nil {
+		store, err := newFileCredentialStore()
+		if err != nil {
+			return err
+		}
+		b.Store = store
+	}
+	return nil
 }
 
 // handleCreate handles the credential creation call from JavaScript
@@ -299,14 +309,14 @@ func (b *WebAuthnBridge) handleGet(optionsJSON string) (string, error) {
 
 // handleIsAvailable handles the availability check from JavaScript
 func (b *WebAuthnBridge) handleIsAvailable() bool {
-	// WebAuthn is available if either internal store works or webauthn.dll is available
-	return b.store != nil || IsWebAuthnDLLAvailable()
+	// WebAuthn is available if either internal store can be initialized or webauthn.dll is available
+	return b.Store != nil || IsWebAuthnDLLAvailable()
 }
 
 // handleCreateInternal implements credential creation using internal storage
 func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (WebAuthnCredential, error) {
-	if b.store == nil {
-		return WebAuthnCredential{}, errors.New("internal credential store not available")
+	if err := b.ensureStore(); err != nil {
+		return WebAuthnCredential{}, fmt.Errorf("credential store not available: %w", err)
 	}
 
 	// Generate credential ID
@@ -382,7 +392,7 @@ func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (We
 	attestationBase64 := base64URLEncode(attestationObj)
 
 	// Store credential
-	cred := storedCredential{
+	cred := StoredCredential{
 		ID:         credIDBase64,
 		RPID:       options.RP.ID,
 		UserID:     options.User.ID,
@@ -393,7 +403,7 @@ func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (We
 		CreatedAt:  time.Now(),
 	}
 
-	if err := b.store.save(cred); err != nil {
+	if err := b.Store.Save(cred); err != nil {
 		return WebAuthnCredential{}, err
 	}
 
@@ -441,17 +451,17 @@ func createAttestationObject(authData []byte) ([]byte, error) {
 
 // handleGetInternal implements assertion using internal storage
 func (b *WebAuthnBridge) handleGetInternal(options WebAuthnGetOptions) (WebAuthnAssertion, error) {
-	if b.store == nil {
-		return WebAuthnAssertion{}, errors.New("internal credential store not available")
+	if err := b.ensureStore(); err != nil {
+		return WebAuthnAssertion{}, fmt.Errorf("credential store not available: %w", err)
 	}
 
 	// Find matching credential
-	var cred storedCredential
+	var cred StoredCredential
 	var found bool
 
 	if len(options.AllowCredentials) > 0 {
 		for _, allowedID := range options.AllowCredentials {
-			c, err := b.store.load(allowedID)
+			c, err := b.Store.Load(allowedID)
 			if err == nil {
 				cred = c
 				found = true
@@ -459,7 +469,7 @@ func (b *WebAuthnBridge) handleGetInternal(options WebAuthnGetOptions) (WebAuthn
 			}
 		}
 	} else {
-		creds, err := b.store.loadAllByRP(options.RPID)
+		creds, err := b.Store.LoadAll(options.RPID)
 		if err == nil && len(creds) > 0 {
 			cred = creds[0]
 			found = true
@@ -503,7 +513,7 @@ func (b *WebAuthnBridge) handleGetInternal(options WebAuthnGetOptions) (WebAuthn
 	cred.SignCount++
 	binary.BigEndian.PutUint32(authData[33:37], cred.SignCount)
 
-	if err := b.store.save(cred); err != nil {
+	if err := b.Store.Save(cred); err != nil {
 		return WebAuthnAssertion{}, err
 	}
 

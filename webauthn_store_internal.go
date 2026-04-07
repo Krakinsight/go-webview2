@@ -14,22 +14,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"golang.org/x/sys/windows"
 )
-
-// storedCredential represents a credential stored internally
-type storedCredential struct {
-	ID         string    `json:"id"`
-	RPID       string    `json:"rpid"`
-	UserID     string    `json:"user_id"`
-	UserName   string    `json:"user_name"`
-	PrivateKey []byte    `json:"private_key"` // Encrypted private key
-	PublicKey  []byte    `json:"public_key"`  // COSE-encoded public key
-	SignCount  uint32    `json:"sign_count"`
-	CreatedAt  time.Time `json:"created_at"`
-}
 
 // fileCredentialStore implements encrypted file-based credential storage
 type fileCredentialStore struct {
@@ -99,13 +86,13 @@ func deriveKeyFromUserSID() ([]byte, error) {
 	return hash[:], nil
 }
 
-// save stores a credential
-func (s *fileCredentialStore) save(cred storedCredential) error {
+// Save stores a credential (implements CredentialStore interface)
+func (s *fileCredentialStore) Save(cred StoredCredential) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Load existing credentials
-	creds, err := s.loadAllUnsafe()
+	creds, err := s.loadAllInternal()
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -124,17 +111,17 @@ func (s *fileCredentialStore) save(cred storedCredential) error {
 	}
 
 	// Save to encrypted file
-	return s.saveAllUnsafe(creds)
+	return s.saveAllInternal(creds)
 }
 
-// load retrieves a credential by ID
-func (s *fileCredentialStore) load(credentialID string) (storedCredential, error) {
+// Load retrieves a credential by ID (implements CredentialStore interface)
+func (s *fileCredentialStore) Load(credentialID string) (StoredCredential, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	creds, err := s.loadAllUnsafe()
+	creds, err := s.loadAllInternal()
 	if err != nil {
-		return storedCredential{}, err
+		return StoredCredential{}, err
 	}
 
 	for _, cred := range creds {
@@ -143,20 +130,20 @@ func (s *fileCredentialStore) load(credentialID string) (storedCredential, error
 		}
 	}
 
-	return storedCredential{}, errors.New("credential not found")
+	return StoredCredential{}, errors.New("credential not found")
 }
 
-// loadAllByRP retrieves all credentials for a given RP ID
-func (s *fileCredentialStore) loadAllByRP(rpID string) ([]storedCredential, error) {
+// LoadAll retrieves all credentials for a given RP ID (implements CredentialStore interface)
+func (s *fileCredentialStore) LoadAll(rpID string) ([]StoredCredential, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	creds, err := s.loadAllUnsafe()
+	creds, err := s.loadAllInternal()
 	if err != nil {
 		return nil, err
 	}
 
-	var result []storedCredential
+	var result []StoredCredential
 	for _, cred := range creds {
 		if cred.RPID == rpID {
 			result = append(result, cred)
@@ -166,13 +153,40 @@ func (s *fileCredentialStore) loadAllByRP(rpID string) ([]storedCredential, erro
 	return result, nil
 }
 
-// loadAllUnsafe loads all credentials without locking (caller must hold lock)
-func (s *fileCredentialStore) loadAllUnsafe() ([]storedCredential, error) {
+// Delete removes a credential (implements CredentialStore interface)
+func (s *fileCredentialStore) Delete(credentialID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	creds, err := s.loadAllInternal()
+	if err != nil {
+		return err
+	}
+
+	found := false
+	newCreds := make([]StoredCredential, 0, len(creds))
+	for _, cred := range creds {
+		if cred.ID != credentialID {
+			newCreds = append(newCreds, cred)
+		} else {
+			found = true
+		}
+	}
+
+	if !found {
+		return errors.New("credential not found")
+	}
+
+	return s.saveAllInternal(newCreds)
+}
+
+// loadAllInternal loads all credentials without locking (caller must hold lock)
+func (s *fileCredentialStore) loadAllInternal() ([]StoredCredential, error) {
 	// Read encrypted file
 	encryptedData, err := os.ReadFile(s.filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []storedCredential{}, nil
+			return []StoredCredential{}, nil
 		}
 		return nil, err
 	}
@@ -184,7 +198,7 @@ func (s *fileCredentialStore) loadAllUnsafe() ([]storedCredential, error) {
 	}
 
 	// Unmarshal JSON
-	var creds []storedCredential
+	var creds []StoredCredential
 	if err := json.Unmarshal(plaintext, &creds); err != nil {
 		return nil, err
 	}
@@ -192,8 +206,8 @@ func (s *fileCredentialStore) loadAllUnsafe() ([]storedCredential, error) {
 	return creds, nil
 }
 
-// saveAllUnsafe saves all credentials without locking (caller must hold lock)
-func (s *fileCredentialStore) saveAllUnsafe(creds []storedCredential) error {
+// saveAllInternal saves all credentials without locking (caller must hold lock)
+func (s *fileCredentialStore) saveAllInternal(creds []StoredCredential) error {
 	// Marshal to JSON
 	data, err := json.Marshal(creds)
 	if err != nil {

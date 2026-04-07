@@ -9,21 +9,41 @@ import (
 	"time"
 )
 
-// StoredCredential represents a WebAuthn credential stored by InMemoryCredentialStore
-// For the internal encrypted storage, see storedCredential in webauthn_store_internal.go
+// StoredCredential represents a WebAuthn credential stored by CredentialStore implementations
 type StoredCredential struct {
 	ID         string
 	RPID       string
 	UserID     string
 	UserName   string
-	PublicKey  []byte
+	PublicKey  []byte    // COSE-encoded public key
+	PrivateKey []byte    // Encrypted private key (implementation-specific)
 	SignCount  uint32
 	CreatedAt  time.Time
+}
+
+// CredentialStore defines the interface for storing and retrieving WebAuthn credentials.
+// Implementations must handle credential persistence and retrieval for WebAuthn operations.
+type CredentialStore interface {
+	// Save stores a credential, updating it if it already exists
+	Save(credential StoredCredential) error
+
+	// Load retrieves a credential by its ID
+	Load(credentialID string) (StoredCredential, error)
+
+	// LoadAll retrieves all credentials for a given Relying Party ID
+	LoadAll(rpID string) ([]StoredCredential, error)
+
+	// Delete removes a credential by its ID
+	Delete(credentialID string) error
 }
 
 // InMemoryCredentialStore is a simple in-memory implementation of CredentialStore.
 // This is suitable for testing and demos but should not be used in production
 // where credential persistence is required.
+//
+// Note: This implementation does NOT encrypt private keys. For production use,
+// consider using the default encrypted file store or implementing your own
+// secure storage.
 type InMemoryCredentialStore struct {
 	mu          sync.RWMutex
 	credentials map[string]StoredCredential // Key is credential ID
