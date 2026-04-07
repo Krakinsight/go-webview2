@@ -18,6 +18,8 @@ import (
 	"math/big"
 	"sync"
 	"time"
+
+	"github.com/fxamacker/cbor/v2"
 )
 
 // WebAuthnUser represents user information for WebAuthn operations
@@ -322,7 +324,10 @@ func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (We
 
 	// Encode keys for storage
 	privateKeyBytes := encodeECDSAPrivateKey(privateKey)
-	publicKeyBytes := encodeCOSEPublicKey(&privateKey.PublicKey)
+	publicKeyBytes, err := encodeCOSEPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		return WebAuthnCredential{}, fmt.Errorf("failed to encode public key: %w", err)
+	}
 
 	// Use provided origin or fallback to localhost
 	origin := options.Origin
@@ -370,9 +375,10 @@ func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (We
 	authData = append(authData, publicKeyBytes...)
 
 	// Create attestation object (CBOR-encoded)
-	// For simplicity, we'll use "none" attestation format
-	// In production, use proper CBOR encoding
-	attestationObj := createAttestationObject(authData)
+	attestationObj, err := createAttestationObject(authData)
+	if err != nil {
+		return WebAuthnCredential{}, fmt.Errorf("failed to create attestation object: %w", err)
+	}
 	attestationBase64 := base64URLEncode(attestationObj)
 
 	// Store credential
@@ -405,44 +411,32 @@ func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (We
 }
 
 // createAttestationObject creates a CBOR-encoded attestation object
-func createAttestationObject(authData []byte) []byte {
+func createAttestationObject(authData []byte) ([]byte, error) {
 	// CBOR canonical encoding (RFC 7049 §3.9) requires keys sorted by length first, then lexicographically
-	// Correct order:
+	// Using fxamacker/cbor with canonical encoding ensures proper key ordering
+	// Expected order:
 	// 1. "fmt" (3 bytes)
 	// 2. "attStmt" (7 bytes)
 	// 3. "authData" (8 bytes)
 
-	// Manual CBOR encoding
-	result := []byte{0xa3} // map(3)
-
-	// "fmt" key (3 bytes) - first
-	result = append(result, 0x63) // text(3)
-	result = append(result, []byte("fmt")...)
-	result = append(result, 0x64) // text(4)
-	result = append(result, []byte("none")...)
-
-	// "attStmt" key (7 bytes) - second
-	result = append(result, 0x67) // text(7)
-	result = append(result, []byte("attStmt")...)
-	result = append(result, 0xa0) // empty map
-
-	// "authData" key (8 bytes) - third
-	result = append(result, 0x68) // text(8)
-	result = append(result, []byte("authData")...)
-	// authData bytes
-	if len(authData) < 24 {
-		result = append(result, byte(0x40|len(authData))) // bytes(n)
-	} else if len(authData) < 256 {
-		result = append(result, 0x58, byte(len(authData))) // bytes(n)
-	} else {
-		result = append(result, 0x59) // bytes(uint16)
-		lenBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(lenBytes, uint16(len(authData)))
-		result = append(result, lenBytes...)
+	attestationObj := map[string]interface{}{
+		"fmt":      "none",
+		"attStmt":  map[string]interface{}{}, // empty map
+		"authData": authData,
 	}
-	result = append(result, authData...)
 
-	return result
+	// Use canonical CBOR encoding which handles key sorting correctly
+	encMode, err := cbor.CanonicalEncOptions().EncMode()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CBOR encode mode: %w", err)
+	}
+
+	encoded, err := encMode.Marshal(attestationObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode attestation object: %w", err)
+	}
+
+	return encoded, nil
 }
 
 // handleGetInternal implements assertion using internal storage
@@ -597,7 +591,7 @@ func base64URLDecode(s string) ([]byte, error) {
 
 // encodeCOSEPublicKey encodes an ECDSA P-256 public key in COSE format
 // COSE Key format according to RFC 8152
-func encodeCOSEPublicKey(pubKey *ecdsa.PublicKey) []byte {
+func encodeCOSEPublicKey(pubKey *ecdsa.PublicKey) ([]byte, error) {
 	// COSE Key for ES256 (ECDSA with P-256 and SHA-256)
 	// This is a CBOR-encoded map with the following structure:
 	// {
@@ -608,9 +602,6 @@ func encodeCOSEPublicKey(pubKey *ecdsa.PublicKey) []byte {
 	//   -3: y        // y coordinate (32 bytes)
 	// }
 
-	// For simplicity, we'll create a minimal CBOR encoding
-	// In production, use a proper CBOR library like github.com/fxamacker/cbor
-
 	x := pubKey.X.Bytes()
 	y := pubKey.Y.Bytes()
 
@@ -620,24 +611,27 @@ func encodeCOSEPublicKey(pubKey *ecdsa.PublicKey) []byte {
 	copy(xBytes[32-len(x):], x)
 	copy(yBytes[32-len(y):], y)
 
-	// Manual CBOR encoding for the COSE key
-	coseKey := []byte{
-		0xa5, // map(5)
-		0x01, // key 1 (kty)
-		0x02, // EC2 (2)
-		0x03, // key 3 (alg)
-		0x26, // -7 (ES256)
-		0x20, // key -1 (crv)
-		0x01, // P-256 (1)
-		0x21, // key -2 (x coordinate)
-		0x58, 0x20, // bytes(32)
+	// Create COSE key map with integer keys (CBOR allows this)
+	coseKey := map[int]interface{}{
+		1:  2,       // kty: EC2
+		3:  -7,      // alg: ES256
+		-1: 1,       // crv: P-256
+		-2: xBytes,  // x coordinate
+		-3: yBytes,  // y coordinate
 	}
-	coseKey = append(coseKey, xBytes...)
-	coseKey = append(coseKey, 0x22) // key -3 (y coordinate)
-	coseKey = append(coseKey, 0x58, 0x20) // bytes(32)
-	coseKey = append(coseKey, yBytes...)
 
-	return coseKey
+	// Use canonical CBOR encoding
+	encMode, err := cbor.CanonicalEncOptions().EncMode()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CBOR encode mode: %w", err)
+	}
+
+	encoded, err := encMode.Marshal(coseKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode COSE key: %w", err)
+	}
+
+	return encoded, nil
 }
 
 // encodeECDSAPrivateKey encodes an ECDSA private key for storage
