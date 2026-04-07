@@ -149,6 +149,8 @@ w := webview2.NewWithOptions(webview2.WebViewOptions{
 
 WebView2's sandbox blocks direct access to the platform authenticator (Windows Hello / FIDO2). The WebAuthn bridge provides a JavaScript-to-Go bridge that intercepts `navigator.credentials` API calls and routes them through custom Go handlers.
 
+**Basic Setup:**
+
 ```go
 w := webview2.NewWithOptions(webview2.WebViewOptions{
     Debug:     true,
@@ -159,14 +161,38 @@ w := webview2.NewWithOptions(webview2.WebViewOptions{
     },
 })
 
+// Create a credential store (in-memory for demo, use your own for production)
+store := webview2.NewInMemoryCredentialStore()
+
 // Enable WebAuthn bridge
 bridge := w.EnableWebAuthnBridge()
+bridge.SetCredentialStore(store)
+bridge.SetTimeout(60 * time.Second) // Optional timeout
 
 // Handle credential creation (registration)
-bridge.SetCreateHandler(func(opts webview2.WebAuthnCreateOptions) (webview2.WebAuthnCredential, error) {
+bridge.SetCreateHandler(func(ctx context.Context, opts webview2.WebAuthnCreateOptions) (webview2.WebAuthnCredential, error) {
+    // Check context for cancellation
+    select {
+    case <-ctx.Done():
+        return webview2.WebAuthnCredential{}, ctx.Err()
+    default:
+    }
+
     // Implement credential creation logic
     // This could interact with Windows Hello, FIDO2 devices, or custom authenticators
     log.Printf("Creating credential for user: %s", opts.User.Name)
+
+    // Save credential to store
+    credential := webview2.StoredCredential{
+        ID:        "credential-id-base64url",
+        RPID:      opts.RP.ID,
+        UserID:    opts.User.ID,
+        UserName:  opts.User.Name,
+        PublicKey: publicKeyBytes,
+        SignCount: 0,
+        CreatedAt: time.Now(),
+    }
+    store.Save(credential)
 
     // Return a credential response
     return webview2.WebAuthnCredential{
@@ -181,24 +207,62 @@ bridge.SetCreateHandler(func(opts webview2.WebAuthnCreateOptions) (webview2.WebA
 })
 
 // Handle credential assertion (authentication)
-bridge.SetGetHandler(func(opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAssertion, error) {
+bridge.SetGetHandler(func(ctx context.Context, opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAssertion, error) {
     // Implement authentication logic
     log.Printf("Authenticating with RP: %s", opts.RPID)
 
+    // Load credential from store
+    credentials, _ := store.LoadAll(opts.RPID)
+    if len(credentials) == 0 {
+        return webview2.WebAuthnAssertion{}, errors.New("no credentials found")
+    }
+
     // Return an assertion response
     return webview2.WebAuthnAssertion{
-        ID:    "credential-id-base64url",
-        RawID: "credential-id-base64url",
+        ID:    credentials[0].ID,
+        RawID: credentials[0].ID,
         Type:  "public-key",
         Response: webview2.AssertionResponse{
             ClientDataJSON:    "base64url-encoded-client-data",
             AuthenticatorData: "base64url-encoded-authenticator-data",
             Signature:         "base64url-encoded-signature",
-            UserHandle:        "base64url-encoded-user-handle",
+            UserHandle:        credentials[0].UserID,
         },
     }, nil
 })
 ```
+
+**Credential Storage:**
+
+The bridge supports pluggable credential storage via the `CredentialStore` interface:
+
+```go
+type CredentialStore interface {
+    Save(credential StoredCredential) error
+    Load(credentialID string) (StoredCredential, error)
+    LoadAll(rpID string) ([]StoredCredential, error)
+    Delete(credentialID string) error
+}
+```
+
+Use `NewInMemoryCredentialStore()` for testing, or implement your own for production:
+- SQLite database
+- Encrypted files
+- External vault/keychain
+- Cloud storage
+
+**Windows Hello Integration:**
+
+Check if Windows Hello is available:
+
+```go
+if webview2.IsWebAuthnDLLAvailable() {
+    version, _ := webview2.GetWebAuthnAPIVersion()
+    log.Printf("Windows Hello available (API version: %d)", version)
+}
+```
+
+**Note:** Full Windows Hello integration via `webauthn.dll` is partially implemented. The infrastructure is in place, but complete syscall implementation requires proper struct marshaling according to the WebAuthn API specification.
 
 The JavaScript WebAuthn API works transparently with the bridge:
 
@@ -226,10 +290,13 @@ const assertion = await navigator.credentials.get({
 });
 ```
 
-**Key Benefits:**
+**Key Features:**
 - Bypasses WebView2 sandbox limitations
 - Full control over authentication flow
 - Compatible with standard WebAuthn JavaScript APIs
+- Thread-safe operation (only one WebAuthn operation at a time)
+- Configurable timeouts with context support
+- Pluggable credential storage
 - Can integrate with Windows Hello, FIDO2 devices, or custom authenticators
 
 ### Window Close from JavaScript
