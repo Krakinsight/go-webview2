@@ -249,4 +249,19 @@ type WebView interface {
 	//       return false
 	//   })
 	SetAcceleratorKeyCallback(callback AcceleratorKeyCallback)
+
+	// EnableWebAuthnBridge enables the WebAuthn bridge for handling Web Authentication API calls.
+	// Since WebView2's sandbox blocks access to the platform authenticator (Windows Hello/FIDO2),
+	// this bridge intercepts navigator.credentials calls and routes them through Go handlers.
+	//
+	// Returns a *WebAuthnBridge that can be used to set custom handlers for credential
+	// creation and assertion operations.
+	//
+	// Example:
+	//   bridge := w.EnableWebAuthnBridge()
+	//   bridge.SetCreateHandler(func(opts WebAuthnCreateOptions) (WebAuthnCredential, error) {
+	//       // Handle credential creation
+	//       return credential, nil
+	//   })
+	EnableWebAuthnBridge() *WebAuthnBridge
 }
