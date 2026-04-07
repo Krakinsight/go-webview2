@@ -330,13 +330,21 @@ func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (We
 		origin = "http://localhost"
 	}
 
-	// Create client data JSON
-	clientData := map[string]interface{}{
-		"type":      "webauthn.create",
-		"challenge": options.Challenge,
-		"origin":    origin,
+	// Create client data JSON with deterministic field ordering
+	// WebAuthn spec requires "type" to be first
+	clientData := struct {
+		Type      string `json:"type"`
+		Challenge string `json:"challenge"`
+		Origin    string `json:"origin"`
+	}{
+		Type:      "webauthn.create",
+		Challenge: options.Challenge,
+		Origin:    origin,
 	}
-	clientDataJSON, _ := json.Marshal(clientData)
+	clientDataJSON, err := json.Marshal(clientData)
+	if err != nil {
+		return WebAuthnCredential{}, fmt.Errorf("failed to marshal client data: %w", err)
+	}
 	clientDataBase64 := base64URLEncode(clientDataJSON)
 
 	// Create authenticator data
@@ -398,23 +406,27 @@ func (b *WebAuthnBridge) handleCreateInternal(options WebAuthnCreateOptions) (We
 
 // createAttestationObject creates a CBOR-encoded attestation object
 func createAttestationObject(authData []byte) []byte {
-	// Simple CBOR encoding for attestation object with "none" format
-	// {
-	//   "fmt": "none",
-	//   "authData": <bytes>,
-	//   "attStmt": {}
-	// }
+	// CBOR canonical encoding (RFC 7049 §3.9) requires keys sorted by length first, then lexicographically
+	// Correct order:
+	// 1. "fmt" (3 bytes)
+	// 2. "attStmt" (7 bytes)
+	// 3. "authData" (8 bytes)
 
 	// Manual CBOR encoding
 	result := []byte{0xa3} // map(3)
 
-	// "fmt" key
+	// "fmt" key (3 bytes) - first
 	result = append(result, 0x63) // text(3)
 	result = append(result, []byte("fmt")...)
 	result = append(result, 0x64) // text(4)
 	result = append(result, []byte("none")...)
 
-	// "authData" key
+	// "attStmt" key (7 bytes) - second
+	result = append(result, 0x67) // text(7)
+	result = append(result, []byte("attStmt")...)
+	result = append(result, 0xa0) // empty map
+
+	// "authData" key (8 bytes) - third
 	result = append(result, 0x68) // text(8)
 	result = append(result, []byte("authData")...)
 	// authData bytes
@@ -429,11 +441,6 @@ func createAttestationObject(authData []byte) []byte {
 		result = append(result, lenBytes...)
 	}
 	result = append(result, authData...)
-
-	// "attStmt" key
-	result = append(result, 0x67) // text(7)
-	result = append(result, []byte("attStmt")...)
-	result = append(result, 0xa0) // empty map
 
 	return result
 }
@@ -475,13 +482,21 @@ func (b *WebAuthnBridge) handleGetInternal(options WebAuthnGetOptions) (WebAuthn
 		origin = "http://localhost"
 	}
 
-	// Create client data JSON
-	clientData := map[string]interface{}{
-		"type":      "webauthn.get",
-		"challenge": options.Challenge,
-		"origin":    origin,
+	// Create client data JSON with deterministic field ordering
+	// WebAuthn spec requires "type" to be first
+	clientData := struct {
+		Type      string `json:"type"`
+		Challenge string `json:"challenge"`
+		Origin    string `json:"origin"`
+	}{
+		Type:      "webauthn.get",
+		Challenge: options.Challenge,
+		Origin:    origin,
 	}
-	clientDataJSON, _ := json.Marshal(clientData)
+	clientDataJSON, err := json.Marshal(clientData)
+	if err != nil {
+		return WebAuthnAssertion{}, fmt.Errorf("failed to marshal client data: %w", err)
+	}
 	clientDataBase64 := base64URLEncode(clientDataJSON)
 
 	// Create authenticator data
