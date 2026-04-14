@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/Krakinsight/go-webview2/internal/w32"
@@ -100,6 +101,46 @@ type WebViewOptions struct {
 	// WindowOptions customizes the window that is created to embed the
 	// WebView2 widget.
 	WindowOptions WindowOptions
+
+	// WebAuthn configures the WebAuthn bridge.
+	// Set Enabled to true to automatically intercept navigator.credentials calls
+	// and route them through Windows Hello / internal ECDSA fallback.
+	WebAuthn WebAuthnOptions
+}
+
+// ************************************************************************************************
+// WebAuthnOptions configures the WebAuthn bridge that is created via WebViewOptions.
+//
+// Example usage:
+//
+//	webview2.NewWithOptions(webview2.WebViewOptions{
+//	    WebAuthn: webview2.WebAuthnOptions{
+//	        Enabled: true,
+//	        OnWindowsHelloFallback: func(op webview2.WebAuthnOperation, err error) bool {
+//	            return true // use internal ECDSA when Windows Hello is unavailable
+//	        },
+//	    },
+//	})
+type WebAuthnOptions struct {
+	// Enabled activates the WebAuthn bridge automatically after window creation.
+	// When false (default), the bridge is not installed; call EnableWebAuthnBridge() manually.
+	Enabled bool
+
+	// OnUserApproval is an optional gate called before any Windows Hello operation.
+	// Return true to abort the operation, false/nil to proceed.
+	OnUserApproval func(op WebAuthnOperation) bool
+
+	// OnWindowsHelloFallback is called when Windows Hello fails.
+	// Return true to use the internal ECDSA fallback, false to propagate the error.
+	OnWindowsHelloFallback func(op WebAuthnOperation, whErr error) bool
+
+	// Store is the credential storage used by the internal ECDSA fallback.
+	// If nil, a default encrypted file store in %APPDATA% is created automatically.
+	Store CredentialStore
+
+	// Timeout overrides the default 60-second operation timeout.
+	// Zero means use the default.
+	Timeout int // seconds
 }
 
 // New creates a new webview in a new window.
@@ -149,6 +190,17 @@ func NewWithOptions(options WebViewOptions) WebView {
 		err = w.settings.PutUserAgent(options.UserAgent)
 		if err != nil {
 			log.Fatal(err)
+		}
+	}
+
+	// Activate WebAuthn bridge if requested
+	if options.WebAuthn.Enabled {
+		bridge := w.EnableWebAuthnBridge()
+		bridge.OnUserApproval = options.WebAuthn.OnUserApproval
+		bridge.OnWindowsHelloFallback = options.WebAuthn.OnWindowsHelloFallback
+		bridge.Store = options.WebAuthn.Store
+		if options.WebAuthn.Timeout > 0 {
+			bridge.SetTimeout(time.Duration(options.WebAuthn.Timeout) * time.Second)
 		}
 	}
 

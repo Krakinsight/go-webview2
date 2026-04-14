@@ -4,7 +4,6 @@
 package webview2
 
 import (
-	"errors"
 	"sync"
 	"time"
 )
@@ -72,7 +71,7 @@ func (s *InMemoryCredentialStore) Load(credentialID string) (StoredCredential, e
 
 	credential, ok := s.credentials[credentialID]
 	if !ok {
-		return StoredCredential{}, errors.New("credential not found")
+		return StoredCredential{}, ErrCredentialNotFound
 	}
 
 	return credential, nil
@@ -99,7 +98,7 @@ func (s *InMemoryCredentialStore) Delete(credentialID string) error {
 	defer s.mu.Unlock()
 
 	if _, ok := s.credentials[credentialID]; !ok {
-		return errors.New("credential not found")
+		return ErrCredentialNotFound
 	}
 
 	delete(s.credentials, credentialID)

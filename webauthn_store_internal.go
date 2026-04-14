@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -38,7 +37,7 @@ func newFileCredentialStore() (*fileCredentialStore, error) {
 		}
 	}
 	if appData == "" {
-		return nil, errors.New("could not determine APPDATA directory")
+		return nil, ErrAppDataNotFound
 	}
 
 	// Create go-webview2 directory
@@ -130,7 +129,7 @@ func (s *fileCredentialStore) Load(credentialID string) (StoredCredential, error
 		}
 	}
 
-	return StoredCredential{}, errors.New("credential not found")
+	return StoredCredential{}, ErrCredentialNotFound
 }
 
 // LoadAll retrieves all credentials for a given RP ID (implements CredentialStore interface)
@@ -174,7 +173,7 @@ func (s *fileCredentialStore) Delete(credentialID string) error {
 	}
 
 	if !found {
-		return errors.New("credential not found")
+		return ErrCredentialNotFound
 	}
 
 	return s.saveAllInternal(newCreds)
@@ -261,7 +260,7 @@ func (s *fileCredentialStore) decrypt(ciphertext []byte) ([]byte, error) {
 
 	nonceSize := gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
-		return nil, errors.New("ciphertext too short")
+		return nil, ErrCiphertextTooShort
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]

@@ -8,148 +8,14 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/asn1"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
-	"math/big"
-	"sync"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
 )
-
-// WebAuthnUser represents user information for WebAuthn operations
-type WebAuthnUser struct {
-	ID          string // User ID (base64url encoded)
-	Name        string // User name (email)
-	DisplayName string // Display name
-}
-
-// WebAuthnOperation describes what is being requested, passed to the approval callback
-type WebAuthnOperation struct {
-	Type   string       // "create" or "get"
-	RPID   string       // Relying Party ID
-	RPName string       // Relying Party Name
-	User   WebAuthnUser // Empty for "get" operations
-}
-
-// WebAuthnBridge provides a JavaScript bridge for WebAuthn functionality.
-// Since WebView2's sandbox blocks access to the platform authenticator (Windows Hello/FIDO2),
-// this bridge intercepts navigator.credentials calls and routes them through Go handlers.
-//
-// Operation flow:
-//  1. OnUserApproval (optional gate): nil or returns false → proceed to Windows Hello.
-//     Returns true → abort the operation (user explicitly denied).
-//  2. Windows Hello via webauthn.dll.
-//  3. If Windows Hello fails and OnWindowsHelloFallback != nil → use internal ECDSA implementation.
-type WebAuthnBridge struct {
-	// OnUserApproval is an optional pre-check gate called before Windows Hello.
-	// - nil: proceed directly to Windows Hello (no gate)
-	// - returns false: proceed to Windows Hello (user approved or no preference)
-	// - returns true: abort the operation (user explicitly denied/cancelled)
-	OnUserApproval func(op WebAuthnOperation) bool
-
-	// OnWindowsHelloFallback is called when Windows Hello fails.
-	// - nil: return the Windows Hello error to the caller
-	// - non-nil: use internal ECDSA implementation as fallback
-	// The bool parameter indicates whether to use the internal implementation.
-	// Return true to use internal ECDSA, false to propagate the Windows Hello error.
-	OnWindowsHelloFallback func(op WebAuthnOperation, whErr error) bool
-
-	// Store is the credential storage implementation used by the internal ECDSA fallback.
-	// If nil, a default encrypted file-based store will be created automatically.
-	// You can inject your own implementation by setting this field before calling
-	// EnableWebAuthnBridge or by setting it directly on the returned bridge.
-	Store CredentialStore
-
-	webview WebView
-	timeout time.Duration
-	mu      sync.Mutex
-	pending bool // Only one WebAuthn operation at a time
-}
-
-// WebAuthnCreateOptions represents the options for creating a new credential
-type WebAuthnCreateOptions struct {
-	Challenge              string                 `json:"challenge"`
-	RP                     RelyingParty           `json:"rp"`
-	User                   User                   `json:"user"`
-	PubKeyCredParams       []PubKeyCredParam      `json:"pubKeyCredParams"`
-	AuthenticatorSelection AuthenticatorSelection `json:"authenticatorSelection,omitempty"`
-	ExcludeCredentials     []string               `json:"excludeCredentials,omitempty"`
-	Timeout                int                    `json:"timeout,omitempty"`
-	Attestation            string                 `json:"attestation,omitempty"`
-	Origin                 string                 `json:"origin,omitempty"` // Page origin for clientDataJSON
-}
-
-// WebAuthnGetOptions represents the options for getting an assertion
-type WebAuthnGetOptions struct {
-	Challenge        string   `json:"challenge"`
-	RPID             string   `json:"rpId,omitempty"`
-	AllowCredentials []string `json:"allowCredentials,omitempty"`
-	Timeout          int      `json:"timeout,omitempty"`
-	UserVerification string   `json:"userVerification,omitempty"`
-	Origin           string   `json:"origin,omitempty"` // Page origin for clientDataJSON
-}
-
-// RelyingParty represents the relying party information
-type RelyingParty struct {
-	Name string `json:"name"`
-	ID   string `json:"id,omitempty"`
-}
-
-// User represents the user information
-type User struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	DisplayName string `json:"displayName"`
-}
-
-// PubKeyCredParam represents a public key credential parameter
-type PubKeyCredParam struct {
-	Type string `json:"type"`
-	Alg  int    `json:"alg"`
-}
-
-// AuthenticatorSelection represents authenticator selection criteria
-type AuthenticatorSelection struct {
-	AuthenticatorAttachment string `json:"authenticatorAttachment,omitempty"`
-	RequireResidentKey      bool   `json:"requireResidentKey,omitempty"`
-	UserVerification        string `json:"userVerification,omitempty"`
-}
-
-// WebAuthnCredential represents a created credential
-type WebAuthnCredential struct {
-	ID       string                 `json:"id"`
-	RawID    string                 `json:"rawId"`
-	Type     string                 `json:"type"`
-	Response CredentialResponse     `json:"response"`
-}
-
-// CredentialResponse contains the credential response data
-type CredentialResponse struct {
-	ClientDataJSON    string   `json:"clientDataJSON"`
-	AttestationObject string   `json:"attestationObject"`
-}
-
-// WebAuthnAssertion represents an assertion result
-type WebAuthnAssertion struct {
-	ID       string            `json:"id"`
-	RawID    string            `json:"rawId"`
-	Type     string            `json:"type"`
-	Response AssertionResponse `json:"response"`
-}
-
-// AssertionResponse contains the assertion response data
-type AssertionResponse struct {
-	ClientDataJSON    string `json:"clientDataJSON"`
-	AuthenticatorData string `json:"authenticatorData"`
-	Signature         string `json:"signature"`
-	UserHandle        string `json:"userHandle,omitempty"`
-}
 
 // EnableWebAuthnBridge enables the WebAuthn bridge on the webview.
 // This injects JavaScript that intercepts navigator.credentials calls and routes them through Go handlers.
@@ -193,7 +59,7 @@ func (b *WebAuthnBridge) handleCreate(optionsJSON string) (string, error) {
 	b.mu.Lock()
 	if b.pending {
 		b.mu.Unlock()
-		return "", errors.New("WebAuthn operation already in progress")
+		return "", ErrOperationAlreadyInProgress
 	}
 	b.pending = true
 	b.mu.Unlock()
@@ -225,7 +91,7 @@ func (b *WebAuthnBridge) handleCreate(optionsJSON string) (string, error) {
 
 	// Step 1: OnUserApproval gate — returns true means abort
 	if b.OnUserApproval != nil && b.OnUserApproval(op) {
-		return "", errors.New("operation cancelled by user")
+		return "", ErrOperationCancelledByUser
 	}
 
 	// Step 2: Windows Hello
@@ -265,7 +131,7 @@ func (b *WebAuthnBridge) handleGet(optionsJSON string) (string, error) {
 	b.mu.Lock()
 	if b.pending {
 		b.mu.Unlock()
-		return "", errors.New("WebAuthn operation already in progress")
+		return "", ErrOperationAlreadyInProgress
 	}
 	b.pending = true
 	b.mu.Unlock()
@@ -287,13 +153,13 @@ func (b *WebAuthnBridge) handleGet(optionsJSON string) (string, error) {
 	op := WebAuthnOperation{
 		Type:   "get",
 		RPID:   options.RPID,
-		RPName: options.RPID, // Use RPID as name for "get" operations
+		RPName: options.RPID,   // Use RPID as name for "get" operations
 		User:   WebAuthnUser{}, // Empty for "get"
 	}
 
 	// Step 1: OnUserApproval gate — returns true means abort
 	if b.OnUserApproval != nil && b.OnUserApproval(op) {
-		return "", errors.New("operation cancelled by user")
+		return "", ErrOperationCancelledByUser
 	}
 
 	// Step 2: Windows Hello
@@ -497,7 +363,7 @@ func (b *WebAuthnBridge) handleGetInternal(options WebAuthnGetOptions) (WebAuthn
 	}
 
 	if !found {
-		return WebAuthnAssertion{}, errors.New("no matching credential found")
+		return WebAuthnAssertion{}, ErrNoMatchingCredential
 	}
 
 	// Use provided origin or fallback to localhost
@@ -573,13 +439,13 @@ func (b *WebAuthnBridge) handleGetInternal(options WebAuthnGetOptions) (WebAuthn
 // fallbackToWindowsHello calls webauthn.dll for credential creation
 func (b *WebAuthnBridge) fallbackToWindowsHello(createOpts WebAuthnCreateOptions, _ WebAuthnGetOptions) (WebAuthnCredential, error) {
 	if !IsWebAuthnDLLAvailable() {
-		return WebAuthnCredential{}, errors.New("webauthn.dll not available")
+		return WebAuthnCredential{}, ErrWebAuthnDLLNotAvailable
 	}
 
 	// Get window handle from webview
 	hwnd := b.getHWND()
 	if hwnd == 0 {
-		return WebAuthnCredential{}, errors.New("could not get window handle")
+		return WebAuthnCredential{}, ErrNoWindowHandle
 	}
 
 	// Call Windows Hello via syscall
@@ -589,13 +455,13 @@ func (b *WebAuthnBridge) fallbackToWindowsHello(createOpts WebAuthnCreateOptions
 // fallbackToWindowsHelloGet calls webauthn.dll for assertion
 func (b *WebAuthnBridge) fallbackToWindowsHelloGet(opts WebAuthnGetOptions) (WebAuthnAssertion, error) {
 	if !IsWebAuthnDLLAvailable() {
-		return WebAuthnAssertion{}, errors.New("webauthn.dll not available")
+		return WebAuthnAssertion{}, ErrWebAuthnDLLNotAvailable
 	}
 
 	// Get window handle from webview
 	hwnd := b.getHWND()
 	if hwnd == 0 {
-		return WebAuthnAssertion{}, errors.New("could not get window handle")
+		return WebAuthnAssertion{}, ErrNoWindowHandle
 	}
 
 	// Call Windows Hello via syscall
@@ -609,294 +475,3 @@ func (b *WebAuthnBridge) getHWND() uintptr {
 	}
 	return 0
 }
-
-// Helper functions for base64url encoding/decoding
-func base64URLEncode(data []byte) string {
-	return base64.RawURLEncoding.EncodeToString(data)
-}
-
-func base64URLDecode(s string) ([]byte, error) {
-	return base64.RawURLEncoding.DecodeString(s)
-}
-
-// encodeCOSEPublicKey encodes an ECDSA P-256 public key in COSE format
-// COSE Key format according to RFC 8152
-func encodeCOSEPublicKey(pubKey *ecdsa.PublicKey) ([]byte, error) {
-	// COSE Key for ES256 (ECDSA with P-256 and SHA-256)
-	// This is a CBOR-encoded map with the following structure:
-	// {
-	//   1: 2,        // kty: EC2 key type
-	//   3: -7,       // alg: ES256
-	//   -1: 1,       // crv: P-256
-	//   -2: x,       // x coordinate (32 bytes)
-	//   -3: y        // y coordinate (32 bytes)
-	// }
-
-	x := pubKey.X.Bytes()
-	y := pubKey.Y.Bytes()
-
-	// Ensure coordinates are 32 bytes (pad with leading zeros if needed)
-	xBytes := make([]byte, 32)
-	yBytes := make([]byte, 32)
-	copy(xBytes[32-len(x):], x)
-	copy(yBytes[32-len(y):], y)
-
-	// Create COSE key map with integer keys (CBOR allows this)
-	coseKey := map[int]interface{}{
-		1:  2,       // kty: EC2
-		3:  -7,      // alg: ES256
-		-1: 1,       // crv: P-256
-		-2: xBytes,  // x coordinate
-		-3: yBytes,  // y coordinate
-	}
-
-	// Use canonical CBOR encoding
-	encMode, err := cbor.CanonicalEncOptions().EncMode()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create CBOR encode mode: %w", err)
-	}
-
-	encoded, err := encMode.Marshal(coseKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode COSE key: %w", err)
-	}
-
-	return encoded, nil
-}
-
-// encodeECDSAPrivateKey encodes an ECDSA private key for storage
-func encodeECDSAPrivateKey(privKey *ecdsa.PrivateKey) []byte {
-	// Store the D value (private key scalar)
-	d := privKey.D.Bytes()
-	// Ensure it's 32 bytes for P-256
-	privateKeyBytes := make([]byte, 32)
-	copy(privateKeyBytes[32-len(d):], d)
-	return privateKeyBytes
-}
-
-// decodeECDSAPrivateKey decodes a stored ECDSA private key
-func decodeECDSAPrivateKey(keyBytes []byte) (*ecdsa.PrivateKey, error) {
-	if len(keyBytes) != 32 {
-		return nil, errors.New("invalid private key length")
-	}
-
-	privKey := new(ecdsa.PrivateKey)
-	privKey.PublicKey.Curve = elliptic.P256()
-	privKey.D = new(big.Int).SetBytes(keyBytes)
-
-	// Derive public key from private key
-	privKey.PublicKey.X, privKey.PublicKey.Y = elliptic.P256().ScalarBaseMult(keyBytes)
-
-	return privKey, nil
-}
-
-// signWithECDSA creates an ECDSA signature over the data
-func signWithECDSA(privKey *ecdsa.PrivateKey, data []byte) ([]byte, error) {
-	hash := sha256.Sum256(data)
-
-	r, s, err := ecdsa.Sign(rand.Reader, privKey, hash[:])
-	if err != nil {
-		return nil, err
-	}
-
-	// Encode signature in ASN.1 DER format (standard for WebAuthn)
-	type ECDSASignature struct {
-		R, S *big.Int
-	}
-	sig := ECDSASignature{R: r, S: s}
-	return asn1.Marshal(sig)
-}
-
-// randomBytes fills the byte slice with random data
-func randomBytes(b []byte) (int, error) {
-	return rand.Read(b)
-}
-
-// webauthnBridgeJS is the JavaScript code that intercepts WebAuthn API calls
-const webauthnBridgeJS = `
-(function() {
-	'use strict';
-
-	// Store the original credentials API if it exists
-	const originalCredentials = navigator.credentials;
-
-	// Helper function to convert ArrayBuffer to base64url
-	function arrayBufferToBase64Url(buffer) {
-		const bytes = new Uint8Array(buffer);
-		let binary = '';
-		for (let i = 0; i < bytes.byteLength; i++) {
-			binary += String.fromCharCode(bytes[i]);
-		}
-		return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-	}
-
-	// Helper function to convert base64url to ArrayBuffer
-	function base64UrlToArrayBuffer(base64url) {
-		const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
-		const padding = '='.repeat((4 - base64.length % 4) % 4);
-		const binary = atob(base64 + padding);
-		const bytes = new Uint8Array(binary.length);
-		for (let i = 0; i < binary.length; i++) {
-			bytes[i] = binary.charCodeAt(i);
-		}
-		return bytes.buffer;
-	}
-
-	// Helper to convert options for transmission to Go
-	function serializeCreateOptions(options) {
-		const serialized = {
-			challenge: arrayBufferToBase64Url(options.challenge),
-			rp: options.rp,
-			user: {
-				id: arrayBufferToBase64Url(options.user.id),
-				name: options.user.name,
-				displayName: options.user.displayName
-			},
-			pubKeyCredParams: options.pubKeyCredParams || [],
-			origin: window.location.origin  // Pass actual page origin
-		};
-
-		if (options.authenticatorSelection) {
-			serialized.authenticatorSelection = options.authenticatorSelection;
-		}
-		if (options.excludeCredentials && options.excludeCredentials.length > 0) {
-			serialized.excludeCredentials = options.excludeCredentials.map(cred =>
-				arrayBufferToBase64Url(cred.id)
-			);
-		}
-		if (options.timeout) {
-			serialized.timeout = options.timeout;
-		}
-		if (options.attestation) {
-			serialized.attestation = options.attestation;
-		}
-
-		return serialized;
-	}
-
-	function serializeGetOptions(options) {
-		const serialized = {
-			challenge: arrayBufferToBase64Url(options.challenge),
-			rpId: options.rpId || '',
-			timeout: options.timeout || 60000,
-			userVerification: options.userVerification || 'preferred',
-			origin: window.location.origin  // Pass actual page origin
-		};
-
-		if (options.allowCredentials && options.allowCredentials.length > 0) {
-			serialized.allowCredentials = options.allowCredentials.map(cred =>
-				arrayBufferToBase64Url(cred.id)
-			);
-		} else {
-			serialized.allowCredentials = [];
-		}
-
-		return serialized;
-	}
-
-	// Create a new credentials API
-	const webauthnBridge = {
-		async create(options) {
-			if (!options || !options.publicKey) {
-				throw new DOMException('Invalid options', 'NotSupportedError');
-			}
-
-			try {
-				// Serialize options for Go
-				const serializedOptions = serializeCreateOptions(options.publicKey);
-
-				// Call Go handler
-				const resultJSON = await window.__webauthn_create(JSON.stringify(serializedOptions));
-				const result = JSON.parse(resultJSON);
-
-				// Convert back to WebAuthn format
-				const credential = {
-					id: result.id,
-					rawId: base64UrlToArrayBuffer(result.rawId),
-					type: result.type || 'public-key',
-					response: {
-						clientDataJSON: base64UrlToArrayBuffer(result.response.clientDataJSON),
-						attestationObject: base64UrlToArrayBuffer(result.response.attestationObject)
-					}
-				};
-
-				// Add getClientExtensionResults method
-				credential.getClientExtensionResults = function() { return {}; };
-
-				return credential;
-			} catch (error) {
-				console.error('WebAuthn create error:', error);
-				throw new DOMException(error.message || 'Create failed', 'NotAllowedError');
-			}
-		},
-
-		async get(options) {
-			if (!options || !options.publicKey) {
-				throw new DOMException('Invalid options', 'NotSupportedError');
-			}
-
-			try {
-				// Serialize options for Go
-				const serializedOptions = serializeGetOptions(options.publicKey);
-
-				// Call Go handler
-				const resultJSON = await window.__webauthn_get(JSON.stringify(serializedOptions));
-				const result = JSON.parse(resultJSON);
-
-				// Convert back to WebAuthn format
-				const assertion = {
-					id: result.id,
-					rawId: base64UrlToArrayBuffer(result.rawId),
-					type: result.type || 'public-key',
-					response: {
-						clientDataJSON: base64UrlToArrayBuffer(result.response.clientDataJSON),
-						authenticatorData: base64UrlToArrayBuffer(result.response.authenticatorData),
-						signature: base64UrlToArrayBuffer(result.response.signature)
-					}
-				};
-
-				if (result.response.userHandle) {
-					assertion.response.userHandle = base64UrlToArrayBuffer(result.response.userHandle);
-				}
-
-				// Add getClientExtensionResults method
-				assertion.getClientExtensionResults = function() { return {}; };
-
-				return assertion;
-			} catch (error) {
-				console.error('WebAuthn get error:', error);
-				throw new DOMException(error.message || 'Get failed', 'NotAllowedError');
-			}
-		},
-
-		async preventSilentAccess() {
-			// No-op for now
-			return;
-		}
-	};
-
-	// Override navigator.credentials
-	Object.defineProperty(navigator, 'credentials', {
-		value: webauthnBridge,
-		writable: false,
-		configurable: true
-	});
-
-	// Also check if PublicKeyCredential is available
-	if (typeof window.PublicKeyCredential === 'undefined') {
-		window.PublicKeyCredential = function() {};
-		window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = async function() {
-			try {
-				return await window.__webauthn_isAvailable();
-			} catch (error) {
-				return true; // Default to available
-			}
-		};
-		window.PublicKeyCredential.isConditionalMediationAvailable = async function() {
-			return false; // Not supported yet
-		};
-	}
-
-	console.log('WebAuthn bridge initialized');
-})();
-`

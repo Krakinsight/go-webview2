@@ -4,8 +4,6 @@
 package webview2
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"log"
 	"syscall"
@@ -22,16 +20,10 @@ var (
 	p_WebAuthNFreeCredentialAttestation   *windows.LazyProc = m_webauthnDLL.NewProc("WebAuthNFreeCredentialAttestation")
 	p_WebAuthNFreeAssertion               *windows.LazyProc = m_webauthnDLL.NewProc("WebAuthNFreeAssertion")
 	p_WebAuthNGetErrorName                *windows.LazyProc = m_webauthnDLL.NewProc("WebAuthNGetErrorName")
-
-	// ErrWindowsHelloNoCredential is returned by syscallGetAssertion when Windows Hello
-	// has no credential registered for the requested RP (HRESULT NTE_NO_KEY = 0x8009000d).
-	// Callers can use errors.Is to detect this and silently fall back to internal ECDSA.
-	ErrWindowsHelloNoCredential = errors.New("no Windows Hello credential for this RP")
-	ErrWebAuthnDLLNotAvailable  = errors.New("webauthn.dll not available")
-	ErrCredentialAttestationNil = errors.New("credential attestation is nil")
 )
 
-// IsWebAuthnDLLAvailable checks if webauthn.dll is available on this system
+// ************************************************************************************************
+// IsWebAuthnDLLAvailable checks if webauthn.dll is available on this system.
 func IsWebAuthnDLLAvailable() bool {
 	if p_WebAuthNGetApiVersionNumber == nil {
 		return false
@@ -39,7 +31,8 @@ func IsWebAuthnDLLAvailable() bool {
 	return p_WebAuthNGetApiVersionNumber.Find() == nil
 }
 
-// GetWebAuthnAPIVersion returns the WebAuthn API version if available
+// ************************************************************************************************
+// GetWebAuthnAPIVersion returns the WebAuthn API version if available.
 func GetWebAuthnAPIVersion() (uint32, error) {
 	if !IsWebAuthnDLLAvailable() {
 		return 0, ErrWebAuthnDLLNotAvailable
@@ -49,61 +42,24 @@ func GetWebAuthnAPIVersion() (uint32, error) {
 	return uint32(version), nil
 }
 
-// WebAuthnDLLHandler creates handlers that use Windows Hello via webauthn.dll
+// ************************************************************************************************
+// WebAuthnDLLHandler creates handlers that use Windows Hello via webauthn.dll.
 // This is a fallback implementation that uses the native Windows WebAuthn API
 type WebAuthnDLLHandler struct {
 	hwnd uintptr // Window handle for UI
 }
 
-// NewWebAuthnDLLHandler creates a new handler using webauthn.dll
-// hwnd is the window handle where authentication UI should be displayed
+// ************************************************************************************************
+// NewWebAuthnDLLHandler creates a new handler using webauthn.dll.
+// hwnd is the window handle where authentication UI should be displayed.
 func NewWebAuthnDLLHandler(hwnd uintptr) (*WebAuthnDLLHandler, error) {
 	if !IsWebAuthnDLLAvailable() {
-		return nil, errors.New("webauthn.dll not available on this system")
+		return nil, ErrWebAuthnDLLNotAvailable
 	}
 
 	return &WebAuthnDLLHandler{
 		hwnd: hwnd,
 	}, nil
-}
-
-// MakeCredential implements credential creation using Windows Hello
-// Note: This is a simplified implementation. Full implementation would require
-// proper struct marshaling according to webauthn.h specifications
-func (h *WebAuthnDLLHandler) MakeCredential(ctx context.Context, options WebAuthnCreateOptions) (WebAuthnCredential, error) {
-	if !IsWebAuthnDLLAvailable() {
-		return WebAuthnCredential{}, errors.New("webauthn.dll not available")
-	}
-
-	// TODO: Implement full webauthn.dll integration
-	// This requires:
-	// 1. Creating WEBAUTHN_RP_ENTITY_INFORMATION struct
-	// 2. Creating WEBAUTHN_USER_ENTITY_INFORMATION struct
-	// 3. Creating WEBAUTHN_COSE_CREDENTIAL_PARAMETERS array
-	// 4. Creating WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS
-	// 5. Calling WebAuthNAuthenticatorMakeCredential
-	// 6. Parsing the returned WEBAUTHN_CREDENTIAL_ATTESTATION
-	// 7. Properly freeing memory with WebAuthNFreeCredentialAttestation
-
-	return WebAuthnCredential{}, errors.New("webauthn.dll integration not yet fully implemented")
-}
-
-// GetAssertion implements credential assertion using Windows Hello
-func (h *WebAuthnDLLHandler) GetAssertion(ctx context.Context, options WebAuthnGetOptions) (WebAuthnAssertion, error) {
-	if !IsWebAuthnDLLAvailable() {
-		return WebAuthnAssertion{}, errors.New("webauthn.dll not available")
-	}
-
-	// TODO: Implement full webauthn.dll integration
-	// This requires:
-	// 1. Creating WEBAUTHN_CLIENT_DATA struct
-	// 2. Creating WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS
-	// 3. Creating WEBAUTHN_CREDENTIAL_LIST if allowCredentials is specified
-	// 4. Calling WebAuthNAuthenticatorGetAssertion
-	// 5. Parsing the returned WEBAUTHN_ASSERTION
-	// 6. Properly freeing memory with WebAuthNFreeAssertion
-
-	return WebAuthnAssertion{}, errors.New("webauthn.dll integration not yet fully implemented")
 }
 
 // Helper function to convert Go string to UTF-16 pointer
@@ -118,172 +74,11 @@ func toUTF16Ptr(s string) *uint16 {
 	return ptr
 }
 
-// Constants from webauthn.h
-const (
-	WEBAUTHN_API_VERSION_1                               = 1
-	WEBAUTHN_API_VERSION_2                               = 2
-	WEBAUTHN_API_VERSION_3                               = 3
-	WEBAUTHN_API_VERSION_4                               = 4
-	WEBAUTHN_API_CURRENT_VERSION                         = WEBAUTHN_API_VERSION_4
-	WEBAUTHN_HASH_ALGORITHM_SHA_256                      = "SHA-256"
-	WEBAUTHN_HASH_ALGORITHM_SHA_384                      = "SHA-384"
-	WEBAUTHN_HASH_ALGORITHM_SHA_512                      = "SHA-512"
-	WEBAUTHN_CREDENTIAL_TYPE_PUBLIC_KEY                  = "public-key"
-	WEBAUTHN_USER_VERIFICATION_REQUIREMENT_ANY           = 0
-	WEBAUTHN_USER_VERIFICATION_REQUIREMENT_REQUIRED      = 1
-	WEBAUTHN_USER_VERIFICATION_REQUIREMENT_PREFERRED     = 2
-	WEBAUTHN_USER_VERIFICATION_REQUIREMENT_DISCOURAGED   = 3
-	WEBAUTHN_ATTESTATION_CONVEYANCE_PREFERENCE_ANY       = 0
-	WEBAUTHN_ATTESTATION_CONVEYANCE_PREFERENCE_NONE      = 1
-	WEBAUTHN_ATTESTATION_CONVEYANCE_PREFERENCE_INDIRECT  = 2
-	WEBAUTHN_ATTESTATION_CONVEYANCE_PREFERENCE_DIRECT    = 3
-	WEBAUTHN_AUTHENTICATOR_ATTACHMENT_ANY                = 0
-	WEBAUTHN_AUTHENTICATOR_ATTACHMENT_PLATFORM           = 1
-	WEBAUTHN_AUTHENTICATOR_ATTACHMENT_CROSS_PLATFORM     = 2
-	WEBAUTHN_AUTHENTICATOR_ATTACHMENT_CROSS_PLATFORM_U2F = 3
-
-	// COSE algorithm identifiers
-	WEBAUTHN_COSE_ALGORITHM_ECDSA_P256_WITH_SHA256        = -7
-	WEBAUTHN_COSE_ALGORITHM_ECDSA_P384_WITH_SHA384        = -35
-	WEBAUTHN_COSE_ALGORITHM_ECDSA_P521_WITH_SHA512        = -36
-	WEBAUTHN_COSE_ALGORITHM_RSASSA_PKCS1_V1_5_WITH_SHA256 = -257
-	WEBAUTHN_COSE_ALGORITHM_RSASSA_PKCS1_V1_5_WITH_SHA384 = -258
-	WEBAUTHN_COSE_ALGORITHM_RSASSA_PKCS1_V1_5_WITH_SHA512 = -259
-	WEBAUTHN_COSE_ALGORITHM_RSA_PSS_WITH_SHA256           = -37
-	WEBAUTHN_COSE_ALGORITHM_RSA_PSS_WITH_SHA384           = -38
-	WEBAUTHN_COSE_ALGORITHM_RSA_PSS_WITH_SHA512           = -39
-
-	// HRESULT codes returned by webauthn.dll
-	// NTE_NO_KEY: no Windows Hello credential exists for this RP/user
-	WEBAUTHN_NTE_NO_KEY = uintptr(0x8009000d)
-)
-
-// webauthnRPEntityInformation represents WEBAUTHN_RP_ENTITY_INFORMATION
-type webauthnRPEntityInformation struct {
-	dwVersion uint32
-	pwszId    *uint16
-	pwszName  *uint16
-	pwszIcon  *uint16
-}
-
-// webauthnUserEntityInformation represents WEBAUTHN_USER_ENTITY_INFORMATION
-type webauthnUserEntityInformation struct {
-	dwVersion       uint32
-	cbId            uint32
-	pbId            *byte
-	pwszName        *uint16
-	pwszIcon        *uint16
-	pwszDisplayName *uint16
-}
-
-// webauthnCoseCredentialParameter represents WEBAUTHN_COSE_CREDENTIAL_PARAMETER
-type webauthnCoseCredentialParameter struct {
-	dwVersion          uint32
-	pwszCredentialType *uint16
-	lAlg               int32
-}
-
-// webauthnCoseCredentialParameters represents WEBAUTHN_COSE_CREDENTIAL_PARAMETERS
-type webauthnCoseCredentialParameters struct {
-	cCredentialParameters uint32
-	pCredentialParameters *webauthnCoseCredentialParameter
-}
-
-// webauthnClientData represents WEBAUTHN_CLIENT_DATA
-type webauthnClientData struct {
-	dwVersion        uint32
-	cbClientDataJSON uint32
-	pbClientDataJSON *byte
-	pwszHashAlgId    *uint16
-}
-
-// webauthnCredential represents WEBAUTHN_CREDENTIAL
-type webauthnCredential struct {
-	dwVersion          uint32
-	cbId               uint32
-	pbId               *byte
-	pwszCredentialType *uint16
-}
-
-// webauthnCredentials represents WEBAUTHN_CREDENTIALS
-type webauthnCredentials struct {
-	cCredentials uint32
-	pCredentials *webauthnCredential
-}
-
-// webauthnExtensions represents WEBAUTHN_EXTENSIONS with correct x64 layout
-// In webauthn.h: { DWORD cExtensions; PWEBAUTHN_EXTENSION pExtensions; }
-// On x64: 4 bytes count + 4 bytes padding + 8 bytes pointer = 16 bytes total
-type webauthnExtensions struct {
-	cExtensions uint32
-	_           uint32  // alignment padding
-	pExtensions uintptr // pointer to extensions array (NULL = no extensions)
-}
-
-// webauthnAuthenticatorMakeCredentialOptions represents WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS
-type webauthnAuthenticatorMakeCredentialOptions struct {
-	dwVersion                         uint32
-	dwTimeoutMilliseconds             uint32
-	credentialsToExclude              webauthnCredentials
-	extensions                        webauthnExtensions
-	dwAuthenticatorAttachment         uint32
-	bRequireResidentKey               uint32
-	dwUserVerificationRequirement     uint32
-	dwAttestationConveyancePreference uint32
-	dwFlags                           uint32
-	pCancellationId                   *windows.GUID
-	pExcludeCredentialList            *webauthnCredentials
-}
-
-// webauthnAuthenticatorGetAssertionOptions represents WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS
-type webauthnAuthenticatorGetAssertionOptions struct {
-	dwVersion                     uint32
-	dwTimeoutMilliseconds         uint32
-	credentialsAllowed            webauthnCredentials
-	extensions                    webauthnExtensions
-	dwAuthenticatorAttachment     uint32
-	dwUserVerificationRequirement uint32
-	dwFlags                       uint32
-	pwszU2fAppId                  *uint16
-	pbU2fAppId                    *uint32
-	pCancellationId               *windows.GUID
-	pAllowCredentialList          *webauthnCredentials
-}
-
-// webauthnCredentialAttestation represents WEBAUTHN_CREDENTIAL_ATTESTATION
-type webauthnCredentialAttestation struct {
-	dwVersion               uint32
-	pwszFormatType          *uint16
-	cbAuthenticatorData     uint32
-	pbAuthenticatorData     *byte
-	cbAttestation           uint32
-	pbAttestation           *byte
-	dwAttestationDecodeType uint32
-	pvAttestationDecode     uintptr
-	cbAttestationObject     uint32
-	pbAttestationObject     *byte
-	cbCredentialId          uint32
-	pbCredentialId          *byte
-	extensions              uintptr
-	dwUsedTransport         uint32
-}
-
-// webauthnAssertion represents WEBAUTHN_ASSERTION
-type webauthnAssertion struct {
-	dwVersion           uint32
-	cbAuthenticatorData uint32
-	pbAuthenticatorData *byte
-	cbSignature         uint32
-	pbSignature         *byte
-	credential          webauthnCredential
-	cbUserId            uint32
-	pbUserId            *byte
-}
-
-// syscallMakeCredential calls webauthn.dll to create a credential using Windows Hello
+// ************************************************************************************************
+// syscallMakeCredential calls webauthn.dll to create a credential using Windows Hello.
 func syscallMakeCredential(hwnd uintptr, options WebAuthnCreateOptions) (WebAuthnCredential, error) {
 	if !IsWebAuthnDLLAvailable() {
-		return WebAuthnCredential{}, errors.New("webauthn.dll not available")
+		return WebAuthnCredential{}, ErrWebAuthnDLLNotAvailable
 	}
 
 	// Create RP entity
@@ -297,7 +92,7 @@ func syscallMakeCredential(hwnd uintptr, options WebAuthnCreateOptions) (WebAuth
 	// Decode user ID from base64url
 	userID, err := base64URLDecode(options.User.ID)
 	if err != nil {
-		return WebAuthnCredential{}, fmt.Errorf("invalid user ID: %w", err)
+		return WebAuthnCredential{}, fmt.Errorf("%w: invalid user ID with %w", ErrInvalidUserID, err)
 	}
 
 	// Create user entity
@@ -393,7 +188,7 @@ func syscallMakeCredential(hwnd uintptr, options WebAuthnCreateOptions) (WebAuth
 		})
 	}
 
-	// Use dwVersion capped at 3 (current struct layout) but no lower than needed
+	// Use dwVersion capped at 3 (current struct layout)
 	apiVersion, _ := GetWebAuthnAPIVersion()
 	dwVersion := uint32(3)
 	if apiVersion < dwVersion {
@@ -421,7 +216,7 @@ func syscallMakeCredential(hwnd uintptr, options WebAuthnCreateOptions) (WebAuth
 
 	// Call WebAuthNAuthenticatorMakeCredential
 	var pCredentialAttestation *webauthnCredentialAttestation
-	ret, _, err := p_WebAuthNAuthenticatorMakeCredential.Call(
+	ret, _, syscallErr := p_WebAuthNAuthenticatorMakeCredential.Call(
 		hwnd,
 		uintptr(unsafe.Pointer(&rpInfo)),
 		uintptr(unsafe.Pointer(&userInfo)),
@@ -432,11 +227,11 @@ func syscallMakeCredential(hwnd uintptr, options WebAuthnCreateOptions) (WebAuth
 	)
 
 	if ret != 0 {
-		return WebAuthnCredential{}, fmt.Errorf("WebAuthNAuthenticatorMakeCredential failed: %w (0x%x)", err, ret)
+		return WebAuthnCredential{}, fmt.Errorf("%w: WebAuthNAuthenticatorMakeCredential HRESULT=0x%08x syscall=%v", ErrWindowsHelloNoCredential, ret, syscallErr)
 	}
 
 	if pCredentialAttestation == nil {
-		return WebAuthnCredential{}, ErrCredentialAttestationNil
+		return WebAuthnCredential{}, ErrAssertionNil
 	}
 
 	defer p_WebAuthNFreeCredentialAttestation.Call(uintptr(unsafe.Pointer(pCredentialAttestation)))
@@ -473,10 +268,11 @@ func syscallMakeCredential(hwnd uintptr, options WebAuthnCreateOptions) (WebAuth
 	}, nil
 }
 
-// syscallGetAssertion calls webauthn.dll to get an assertion using Windows Hello
+// ************************************************************************************************
+// syscallGetAssertion calls webauthn.dll to get an assertion using Windows Hello.
 func syscallGetAssertion(hwnd uintptr, options WebAuthnGetOptions) (WebAuthnAssertion, error) {
 	if !IsWebAuthnDLLAvailable() {
-		return WebAuthnAssertion{}, errors.New("webauthn.dll not available")
+		return WebAuthnAssertion{}, ErrWebAuthnDLLNotAvailable
 	}
 
 	origin := options.Origin
@@ -530,7 +326,7 @@ func syscallGetAssertion(hwnd uintptr, options WebAuthnGetOptions) (WebAuthnAsse
 		for i, credID := range options.AllowCredentials {
 			decodedID, err := base64URLDecode(credID)
 			if err != nil {
-				return WebAuthnAssertion{}, fmt.Errorf("invalid credential ID: %w", err)
+				return WebAuthnAssertion{}, fmt.Errorf("%w: allowCredentials[%d] base64 decode failed: %w", ErrWindowsHelloNoCredential, i, err)
 			}
 			credentials[i] = webauthnCredential{
 				dwVersion:          1,
@@ -562,11 +358,11 @@ func syscallGetAssertion(hwnd uintptr, options WebAuthnGetOptions) (WebAuthnAsse
 		if ret == WEBAUTHN_NTE_NO_KEY {
 			return WebAuthnAssertion{}, ErrWindowsHelloNoCredential
 		}
-		return WebAuthnAssertion{}, fmt.Errorf("WebAuthNAuthenticatorGetAssertion failed: HRESULT 0x%08x", ret)
+		return WebAuthnAssertion{}, fmt.Errorf("%w: HRESULT=0x%08x", ErrWindowsHelloNoCredential, ret)
 	}
 
 	if pAssertion == nil {
-		return WebAuthnAssertion{}, errors.New("assertion is nil")
+		return WebAuthnAssertion{}, ErrAssertionNil
 	}
 
 	defer p_WebAuthNFreeAssertion.Call(uintptr(unsafe.Pointer(pAssertion)))
