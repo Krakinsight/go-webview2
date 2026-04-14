@@ -24,22 +24,35 @@ type WebAuthnOperation struct {
 // Since WebView2's sandbox blocks access to the platform authenticator (Windows Hello/FIDO2),
 // this bridge intercepts navigator.credentials calls and routes them through Go handlers.
 //
-// Operation flow:
+// Operation flow (when CreateHandler/GetHandler are nil):
 //  1. OnUserApproval (optional gate): nil or returns false → proceed to Windows Hello.
 //     Returns true → abort the operation (user explicitly denied).
 //  2. Windows Hello via webauthn.dll.
 //  3. If Windows Hello fails and OnWindowsHelloFallback != nil → use internal ECDSA implementation.
+//
+// When CreateHandler or GetHandler are set, they fully replace the above flow.
 type WebAuthnBridge struct {
+	// CreateHandler fully replaces the default create flow (Windows Hello + ECDSA fallback).
+	// When set, OnUserApproval, OnWindowsHelloFallback and Store are ignored for create operations.
+	// Useful to delegate credential creation to an external server, HSM, or custom authenticator.
+	CreateHandler func(options WebAuthnCreateOptions) (WebAuthnCredential, error)
+
+	// GetHandler fully replaces the default get flow (Windows Hello + ECDSA fallback).
+	// When set, OnUserApproval, OnWindowsHelloFallback and Store are ignored for get operations.
+	// Useful to delegate assertion to an external server, HSM, or custom authenticator.
+	GetHandler func(options WebAuthnGetOptions) (WebAuthnAssertion, error)
+
 	// OnUserApproval is an optional pre-check gate called before Windows Hello.
+	// Ignored when CreateHandler/GetHandler are set.
 	// - nil: proceed directly to Windows Hello (no gate)
 	// - returns false: proceed to Windows Hello (user approved or no preference)
 	// - returns true: abort the operation (user explicitly denied/cancelled)
 	OnUserApproval func(op WebAuthnOperation) bool
 
 	// OnWindowsHelloFallback is called when Windows Hello fails.
+	// Ignored when CreateHandler/GetHandler are set.
 	// - nil: return the Windows Hello error to the caller
 	// - non-nil: use internal ECDSA implementation as fallback
-	// The bool parameter indicates whether to use the internal implementation.
 	// Return true to use internal ECDSA, false to propagate the Windows Hello error.
 	OnWindowsHelloFallback func(op WebAuthnOperation, whErr error) bool
 

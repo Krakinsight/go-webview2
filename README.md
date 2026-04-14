@@ -147,89 +147,92 @@ w := webview2.NewWithOptions(webview2.WebViewOptions{
 
 ### WebAuthn Bridge
 
-WebView2's sandbox blocks direct access to the platform authenticator (Windows Hello / FIDO2). The WebAuthn bridge provides a JavaScript-to-Go bridge that intercepts `navigator.credentials` API calls and routes them through custom Go handlers.
+WebView2's sandbox blocks direct access to the platform authenticator (Windows Hello / FIDO2). The WebAuthn bridge intercepts `navigator.credentials` API calls and routes them through native Go handlers.
 
-**Basic Setup:**
+**Operation flow:**
+1. `OnUserApproval` (optional gate) — return `true` to abort, `false`/`nil` to continue
+2. Windows Hello via `webauthn.dll` (full CTAP2 support, including plugin authenticators)
+3. If Windows Hello fails and `OnWindowsHelloFallback` returns `true` → internal ECDSA P-256 fallback with encrypted file storage
+
+**Setup via `WebViewOptions` (recommended):**
 
 ```go
 w := webview2.NewWithOptions(webview2.WebViewOptions{
-    Debug:     true,
     WindowOptions: webview2.WindowOptions{
-        Title:  "WebAuthn Demo",
+        Title:  "My App",
         Width:  800,
         Height: 600,
+        Center: true,
+    },
+    WebAuthn: webview2.WebAuthnOptions{
+        // Enabled activates the bridge automatically
+        Enabled: true,
+
+        // Optional: fully replace the create flow (bypasses Windows Hello + ECDSA fallback).
+        // Useful to delegate credential creation to an external server or HSM.
+        // When set, OnUserApproval, OnWindowsHelloFallback and Store are ignored for create.
+        CreateHandler: func(opts webview2.WebAuthnCreateOptions) (webview2.WebAuthnCredential, error) {
+            // call your server / HSM here
+            return myServer.Register(opts)
+        },
+
+        // Optional: fully replace the get flow (bypasses Windows Hello + ECDSA fallback).
+        // When set, OnUserApproval, OnWindowsHelloFallback and Store are ignored for get.
+        GetHandler: func(opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAssertion, error) {
+            return myServer.Authenticate(opts)
+        },
+
+        // Optional: gate called before any Windows Hello operation.
+        // Return true to abort, false to proceed.
+        // Only used when CreateHandler/GetHandler are nil.
+        OnUserApproval: func(op webview2.WebAuthnOperation) bool {
+            log.Printf("WebAuthn %s for RP=%s user=%s", op.Type, op.RPID, op.User.Name)
+            return false // always allow
+        },
+
+        // Optional: called when Windows Hello fails.
+        // Return true to use internal ECDSA fallback, false to propagate the error.
+        // Only used when CreateHandler/GetHandler are nil.
+        OnWindowsHelloFallback: func(op webview2.WebAuthnOperation, err error) bool {
+            log.Printf("Windows Hello failed (%v), using ECDSA fallback", err)
+            return true
+        },
+
+        // Optional: custom credential store.
+        // nil = default AES-GCM encrypted file in %APPDATA%\go-webview2\
+        Store: nil,
+
+        // Optional: operation timeout in seconds (0 = default 60s)
+        Timeout: 120,
     },
 })
+```
 
-// Create a credential store (in-memory for demo, use your own for production)
-store := webview2.NewInMemoryCredentialStore()
+**Manual setup (advanced):**
 
-// Enable WebAuthn bridge
+```go
+w := webview2.NewWithOptions(...)
 bridge := w.EnableWebAuthnBridge()
-bridge.SetCredentialStore(store)
-bridge.SetTimeout(60 * time.Second) // Optional timeout
+bridge.OnUserApproval = func(op webview2.WebAuthnOperation) bool { return false }
+bridge.OnWindowsHelloFallback = func(op webview2.WebAuthnOperation, err error) bool { return true }
+bridge.Store = webview2.NewInMemoryCredentialStore() // or your own implementation
+bridge.SetTimeout(90 * time.Second)
+```
 
-// Handle credential creation (registration)
-bridge.SetCreateHandler(func(ctx context.Context, opts webview2.WebAuthnCreateOptions) (webview2.WebAuthnCredential, error) {
-    // Check context for cancellation
-    select {
-    case <-ctx.Done():
-        return webview2.WebAuthnCredential{}, ctx.Err()
-    default:
-    }
+**Error handling:**
 
-    // Implement credential creation logic
-    // This could interact with Windows Hello, FIDO2 devices, or custom authenticators
-    log.Printf("Creating credential for user: %s", opts.User.Name)
+All errors are typed and can be matched with `errors.Is`:
 
-    // Save credential to store
-    credential := webview2.StoredCredential{
-        ID:        "credential-id-base64url",
-        RPID:      opts.RP.ID,
-        UserID:    opts.User.ID,
-        UserName:  opts.User.Name,
-        PublicKey: publicKeyBytes,
-        SignCount: 0,
-        CreatedAt: time.Now(),
-    }
-    store.Save(credential)
+```go
+import "errors"
 
-    // Return a credential response
-    return webview2.WebAuthnCredential{
-        ID:    "credential-id-base64url",
-        RawID: "credential-id-base64url",
-        Type:  "public-key",
-        Response: webview2.CredentialResponse{
-            ClientDataJSON:    "base64url-encoded-client-data",
-            AttestationObject: "base64url-encoded-attestation",
-        },
-    }, nil
-})
-
-// Handle credential assertion (authentication)
-bridge.SetGetHandler(func(ctx context.Context, opts webview2.WebAuthnGetOptions) (webview2.WebAuthnAssertion, error) {
-    // Implement authentication logic
-    log.Printf("Authenticating with RP: %s", opts.RPID)
-
-    // Load credential from store
-    credentials, _ := store.LoadAll(opts.RPID)
-    if len(credentials) == 0 {
-        return webview2.WebAuthnAssertion{}, errors.New("no credentials found")
-    }
-
-    // Return an assertion response
-    return webview2.WebAuthnAssertion{
-        ID:    credentials[0].ID,
-        RawID: credentials[0].ID,
-        Type:  "public-key",
-        Response: webview2.AssertionResponse{
-            ClientDataJSON:    "base64url-encoded-client-data",
-            AuthenticatorData: "base64url-encoded-authenticator-data",
-            Signature:         "base64url-encoded-signature",
-            UserHandle:        credentials[0].UserID,
-        },
-    }, nil
-})
+// Check specific error conditions
+if errors.Is(err, webview2.ErrWindowsHelloNoCredential) {
+    // No Windows Hello credential for this RP
+}
+if errors.Is(err, webview2.ErrOperationCancelledByUser) {
+    // User denied the operation
+}
 ```
 
 **Credential Storage:**
@@ -245,15 +248,12 @@ type CredentialStore interface {
 }
 ```
 
-Use `NewInMemoryCredentialStore()` for testing, or implement your own for production:
-- SQLite database
-- Encrypted files
-- External vault/keychain
-- Cloud storage
+Available implementations:
+- `NewInMemoryCredentialStore()` — for testing (no persistence, no encryption)
+- Default file store (used when `Store: nil`) — AES-GCM encrypted, key derived from Windows user SID, stored in `%APPDATA%\go-webview2\webauthn_credentials.enc`
+- Custom implementation — inject via `bridge.Store` or `WebAuthnOptions.Store`
 
-**Windows Hello Integration:**
-
-Check if Windows Hello is available:
+**Windows Hello / CTAP plugins:**
 
 ```go
 if webview2.IsWebAuthnDLLAvailable() {
@@ -262,22 +262,30 @@ if webview2.IsWebAuthnDLLAvailable() {
 }
 ```
 
-**Note:** Full Windows Hello integration via `webauthn.dll` is partially implemented. The infrastructure is in place, but complete syscall implementation requires proper struct marshaling according to the WebAuthn API specification.
+Windows Hello plugin authenticators (1Password, Bitwarden, etc.) are automatically supported — `webauthn.dll` orchestrates authenticator selection internally. No extra configuration needed.
 
-The JavaScript WebAuthn API works transparently with the bridge:
+**Supported algorithms:** ES256, ES384, ES512, RS256, RS384, RS512, PS256, PS384, PS512.
+
+**JavaScript API — unchanged:**
+
+The bridge transparently intercepts the standard WebAuthn JavaScript API:
 
 ```javascript
 // Register a new credential
 const credential = await navigator.credentials.create({
     publicKey: {
         challenge: new Uint8Array(32),
-        rp: { name: "My App", id: "localhost" },
+        rp: { name: "My App", id: window.location.hostname },
         user: {
             id: new Uint8Array(16),
             name: "user@example.com",
-            displayName: "User Name"
+            displayName: "User"
         },
-        pubKeyCredParams: [{ type: "public-key", alg: -7 }]
+        pubKeyCredParams: [
+            { type: "public-key", alg: -7 },   // ES256
+            { type: "public-key", alg: -257 }   // RS256
+        ],
+        authenticatorSelection: { userVerification: "required" }
     }
 });
 
@@ -285,19 +293,26 @@ const credential = await navigator.credentials.create({
 const assertion = await navigator.credentials.get({
     publicKey: {
         challenge: new Uint8Array(32),
-        rpId: "localhost"
+        rpId: window.location.hostname,   // ← always set rpId explicitly
+        allowCredentials: [{
+            type: "public-key",
+            id: credentialIdBytes         // Uint8Array of raw credential ID bytes
+        }],
+        userVerification: "required"
     }
 });
 ```
 
+> **Important:** always pass `rpId` explicitly in `navigator.credentials.get()`. If omitted, the bridge defaults to `window.location.hostname` but Windows Hello may reject it if it differs from the enrolled origin.
+
 **Key Features:**
 - Bypasses WebView2 sandbox limitations
-- Full control over authentication flow
-- Compatible with standard WebAuthn JavaScript APIs
-- Thread-safe operation (only one WebAuthn operation at a time)
-- Configurable timeouts with context support
+- Full Windows Hello / CTAP2 integration including plugin authenticators
+- Internal ECDSA P-256 fallback for environments without Windows Hello
+- Thread-safe (one operation at a time)
+- Configurable timeouts
 - Pluggable credential storage
-- Can integrate with Windows Hello, FIDO2 devices, or custom authenticators
+- All errors typed and matchable with `errors.Is`
 
 ### Window Close from JavaScript
 

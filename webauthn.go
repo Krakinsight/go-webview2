@@ -77,6 +77,19 @@ func (b *WebAuthnBridge) handleCreate(optionsJSON string) (string, error) {
 
 	log.Printf("WebAuthn Create request: RP=%s, User=%s", options.RP.Name, options.User.Name)
 
+	// Fast path: custom handler bypasses the entire Windows Hello + fallback flow
+	if b.CreateHandler != nil {
+		credential, err := b.CreateHandler(options)
+		if err != nil {
+			return "", err
+		}
+		result, err := json.Marshal(credential)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal credential: %w", err)
+		}
+		return string(result), nil
+	}
+
 	// Create operation description for approval callback
 	op := WebAuthnOperation{
 		Type:   "create",
@@ -148,6 +161,19 @@ func (b *WebAuthnBridge) handleGet(optionsJSON string) (string, error) {
 	}
 
 	log.Printf("WebAuthn Get request: RPID=%s", options.RPID)
+
+	// Fast path: custom handler bypasses the entire Windows Hello + fallback flow
+	if b.GetHandler != nil {
+		assertion, err := b.GetHandler(options)
+		if err != nil {
+			return "", err
+		}
+		result, err := json.Marshal(assertion)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal assertion: %w", err)
+		}
+		return string(result), nil
+	}
 
 	// Create operation description for approval callback (user info is empty for "get")
 	op := WebAuthnOperation{

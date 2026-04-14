@@ -126,12 +126,22 @@ type WebAuthnOptions struct {
 	// When false (default), the bridge is not installed; call EnableWebAuthnBridge() manually.
 	Enabled bool
 
+	// CreateHandler fully replaces the default create flow (Windows Hello + ECDSA fallback).
+	// When set, OnUserApproval, OnWindowsHelloFallback and Store are ignored for create operations.
+	CreateHandler func(options WebAuthnCreateOptions) (WebAuthnCredential, error)
+
+	// GetHandler fully replaces the default get flow (Windows Hello + ECDSA fallback).
+	// When set, OnUserApproval, OnWindowsHelloFallback and Store are ignored for get operations.
+	GetHandler func(options WebAuthnGetOptions) (WebAuthnAssertion, error)
+
 	// OnUserApproval is an optional gate called before any Windows Hello operation.
 	// Return true to abort the operation, false/nil to proceed.
+	// Ignored when CreateHandler/GetHandler are set.
 	OnUserApproval func(op WebAuthnOperation) bool
 
 	// OnWindowsHelloFallback is called when Windows Hello fails.
 	// Return true to use the internal ECDSA fallback, false to propagate the error.
+	// Ignored when CreateHandler/GetHandler are set.
 	OnWindowsHelloFallback func(op WebAuthnOperation, whErr error) bool
 
 	// Store is the credential storage used by the internal ECDSA fallback.
@@ -196,6 +206,8 @@ func NewWithOptions(options WebViewOptions) WebView {
 	// Activate WebAuthn bridge if requested
 	if options.WebAuthn.Enabled {
 		bridge := w.EnableWebAuthnBridge()
+		bridge.CreateHandler = options.WebAuthn.CreateHandler
+		bridge.GetHandler = options.WebAuthn.GetHandler
 		bridge.OnUserApproval = options.WebAuthn.OnUserApproval
 		bridge.OnWindowsHelloFallback = options.WebAuthn.OnWindowsHelloFallback
 		bridge.Store = options.WebAuthn.Store
