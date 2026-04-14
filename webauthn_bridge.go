@@ -65,7 +65,7 @@ const webauthnBridgeJS = `
 	function serializeGetOptions(options) {
 		const serialized = {
 			challenge: arrayBufferToBase64Url(options.challenge),
-			rpId: options.rpId || '',
+			rpId: options.rpId || window.location.hostname,
 			timeout: options.timeout || 60000,
 			userVerification: options.userVerification || 'preferred',
 			origin: window.location.origin  // Pass actual page origin
