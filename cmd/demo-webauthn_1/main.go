@@ -86,7 +86,6 @@ func main() {
 	}
 
 	w.SetHtml(demoHTML)
-	w.Navigate("https://webauthn.io/")
 	w.Run()
 }
 
