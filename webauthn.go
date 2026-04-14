@@ -41,18 +41,26 @@ type WebAuthnOperation struct {
 // Since WebView2's sandbox blocks access to the platform authenticator (Windows Hello/FIDO2),
 // this bridge intercepts navigator.credentials calls and routes them through Go handlers.
 //
-// The bridge supports three modes:
-// 1. OnUserApproval == nil: Direct fallback to webauthn.dll (Windows Hello)
-// 2. OnUserApproval returns false: Fallback to webauthn.dll
-// 3. OnUserApproval returns true: Use internal implementation with encrypted storage
+// Operation flow:
+//  1. OnUserApproval (optional gate): nil or returns false → proceed to Windows Hello.
+//     Returns true → abort the operation (user explicitly denied).
+//  2. Windows Hello via webauthn.dll.
+//  3. If Windows Hello fails and OnWindowsHelloFallback != nil → use internal ECDSA implementation.
 type WebAuthnBridge struct {
-	// OnUserApproval is called to ask if the operation should be handled internally.
-	// - nil: bypass directly to webauthn.dll
-	// - returns true: use internal implementation with encrypted storage
-	// - returns false: fallback to webauthn.dll (Windows Hello)
+	// OnUserApproval is an optional pre-check gate called before Windows Hello.
+	// - nil: proceed directly to Windows Hello (no gate)
+	// - returns false: proceed to Windows Hello (user approved or no preference)
+	// - returns true: abort the operation (user explicitly denied/cancelled)
 	OnUserApproval func(op WebAuthnOperation) bool
 
-	// Store is the credential storage implementation.
+	// OnWindowsHelloFallback is called when Windows Hello fails.
+	// - nil: return the Windows Hello error to the caller
+	// - non-nil: use internal ECDSA implementation as fallback
+	// The bool parameter indicates whether to use the internal implementation.
+	// Return true to use internal ECDSA, false to propagate the Windows Hello error.
+	OnWindowsHelloFallback func(op WebAuthnOperation, whErr error) bool
+
+	// Store is the credential storage implementation used by the internal ECDSA fallback.
 	// If nil, a default encrypted file-based store will be created automatically.
 	// You can inject your own implementation by setting this field before calling
 	// EnableWebAuthnBridge or by setting it directly on the returned bridge.
@@ -215,24 +223,30 @@ func (b *WebAuthnBridge) handleCreate(optionsJSON string) (string, error) {
 		},
 	}
 
-	// Determine handling strategy
-	var credential WebAuthnCredential
-	var err error
-
-	if b.OnUserApproval == nil {
-		// Case 1: No approval callback → fallback to webauthn.dll
-		log.Printf("No approval callback, using webauthn.dll fallback")
-		credential, err = b.fallbackToWindowsHello(options, WebAuthnGetOptions{})
-	} else if !b.OnUserApproval(op) {
-		// Case 2: Approval callback returns false → fallback to webauthn.dll
-		log.Printf("User approval denied, using webauthn.dll fallback")
-		credential, err = b.fallbackToWindowsHello(options, WebAuthnGetOptions{})
-	} else {
-		// Case 3: Approval callback returns true → use internal implementation
-		log.Printf("User approved, using internal implementation")
-		credential, err = b.handleCreateInternal(options)
+	// Step 1: OnUserApproval gate — returns true means abort
+	if b.OnUserApproval != nil && b.OnUserApproval(op) {
+		return "", errors.New("operation cancelled by user")
 	}
 
+	// Step 2: Windows Hello
+	credential, whErr := b.fallbackToWindowsHello(options, WebAuthnGetOptions{})
+	if whErr == nil {
+		result, err := json.Marshal(credential)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal credential: %w", err)
+		}
+		return string(result), nil
+	}
+
+	log.Printf("Windows Hello failed: %v", whErr)
+
+	// Step 3: Fallback to internal ECDSA if allowed
+	if b.OnWindowsHelloFallback == nil || !b.OnWindowsHelloFallback(op, whErr) {
+		return "", whErr
+	}
+
+	log.Printf("Using internal ECDSA fallback")
+	credential, err := b.handleCreateInternal(options)
 	if err != nil {
 		return "", err
 	}
@@ -277,24 +291,30 @@ func (b *WebAuthnBridge) handleGet(optionsJSON string) (string, error) {
 		User:   WebAuthnUser{}, // Empty for "get"
 	}
 
-	// Determine handling strategy
-	var assertion WebAuthnAssertion
-	var err error
-
-	if b.OnUserApproval == nil {
-		// Case 1: No approval callback → fallback to webauthn.dll
-		log.Printf("No approval callback, using webauthn.dll fallback")
-		assertion, err = b.fallbackToWindowsHelloGet(options)
-	} else if !b.OnUserApproval(op) {
-		// Case 2: Approval callback returns false → fallback to webauthn.dll
-		log.Printf("User approval denied, using webauthn.dll fallback")
-		assertion, err = b.fallbackToWindowsHelloGet(options)
-	} else {
-		// Case 3: Approval callback returns true → use internal implementation
-		log.Printf("User approved, using internal implementation")
-		assertion, err = b.handleGetInternal(options)
+	// Step 1: OnUserApproval gate — returns true means abort
+	if b.OnUserApproval != nil && b.OnUserApproval(op) {
+		return "", errors.New("operation cancelled by user")
 	}
 
+	// Step 2: Windows Hello
+	assertion, whErr := b.fallbackToWindowsHelloGet(options)
+	if whErr == nil {
+		result, err := json.Marshal(assertion)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal assertion: %w", err)
+		}
+		return string(result), nil
+	}
+
+	log.Printf("Windows Hello failed: %v", whErr)
+
+	// Step 3: Fallback to internal ECDSA if allowed
+	if b.OnWindowsHelloFallback == nil || !b.OnWindowsHelloFallback(op, whErr) {
+		return "", whErr
+	}
+
+	log.Printf("Using internal ECDSA fallback")
+	assertion, err := b.handleGetInternal(options)
 	if err != nil {
 		return "", err
 	}

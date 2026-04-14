@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"syscall"
 	"time"
@@ -30,56 +31,62 @@ func main() {
 	bridge := w.EnableWebAuthnBridge()
 	bridge.SetTimeout(60 * time.Second)
 
-	// Case 1: Set OnUserApproval to nil for automatic Windows Hello fallback
-	// Case 2: Set OnUserApproval to a custom function for approval dialog
-	// Uncomment one of the following to test different scenarios:
-
-	// SCENARIO 1: Automatic Windows Hello (OnUserApproval == nil)
-	// bridge.OnUserApproval = nil
-	// log.Println("Mode: Automatic Windows Hello (OnUserApproval == nil)")
-
-	// SCENARIO 2: Custom approval dialog
+	// Step 1: Optional gate — returning true cancels the operation.
+	// Returning false (or nil callback) proceeds to Windows Hello.
 	bridge.OnUserApproval = func(op webview2.WebAuthnOperation) bool {
-		log.Printf("Approval requested: Type=%s, RPID=%s, RPName=%s", op.Type, op.RPID, op.RPName)
-		if op.Type == "create" {
-			log.Printf("  User: Name=%s, DisplayName=%s", op.User.Name, op.User.DisplayName)
-		}
+		log.Printf("WebAuthn gate: Type=%s, RPID=%s", op.Type, op.RPID)
 
-		// Show native dialog using Windows MessageBox
 		result := messageBox(
 			0,
-			"Allow WebAuthn operation?\n\n"+
+			"WebAuthn operation requested\n\n"+
 				"Type: "+op.Type+"\n"+
-				"RP: "+op.RPName+" ("+op.RPID+")\n"+
-				(func() string {
-					if op.Type == "create" {
-						return "User: " + op.User.DisplayName + " (" + op.User.Name + ")"
-					}
-					return ""
-				})(),
-			"WebAuthn Approval",
+				"RP: "+op.RPName+" ("+op.RPID+")\n\n"+
+				"Click Cancel to abort.",
+			"WebAuthn",
 			0x00000001|0x00000020, // MB_OKCANCEL | MB_ICONQUESTION
 		)
 
-		approved := result == 1 // IDOK
-		if approved {
-			log.Println("✓ User approved - using internal implementation")
-		} else {
-			log.Println("✗ User denied - falling back to Windows Hello")
+		cancelled := result != 1 // IDOK=1 → not cancelled; anything else → cancelled
+		if cancelled {
+			log.Println("Operation cancelled by user")
 		}
-		return approved
+		return cancelled // true = abort
 	}
-	log.Println("Mode: Custom approval dialog (OnUserApproval set)")
+
+	// Step 3: Called when Windows Hello fails.
+	// If no credential exists yet (NTE_NO_KEY), silently fall back to internal ECDSA.
+	// For any other failure, ask the user.
+	bridge.OnWindowsHelloFallback = func(op webview2.WebAuthnOperation, whErr error) bool {
+		if errors.Is(whErr, webview2.ErrWindowsHelloNoCredential) {
+			log.Println("No Windows Hello credential found, using internal ECDSA fallback")
+			return true
+		}
+
+		log.Printf("Windows Hello failed (%v), offering ECDSA fallback", whErr)
+		result := messageBox(
+			0,
+			"Windows Hello failed:\n"+whErr.Error()+"\n\nUse software ECDSA fallback instead?",
+			"Windows Hello Failed",
+			0x00000001|0x00000030, // MB_OKCANCEL | MB_ICONWARNING
+		)
+		use := result == 1
+		if use {
+			log.Println("Using internal ECDSA fallback")
+		}
+		return use
+	}
 
 	// Log Windows Hello availability
 	if webview2.IsWebAuthnDLLAvailable() {
 		version, _ := webview2.GetWebAuthnAPIVersion()
 		log.Printf("Windows Hello is available (WebAuthn API version: %d)", version)
+		bridge.OnUserApproval = nil // Use automatic Windows Hello fallback without custom approval dialog
 	} else {
 		log.Printf("Windows Hello (webauthn.dll) not available")
 	}
 
 	w.SetHtml(demoHTML)
+	w.Navigate("https://webauthn.io/")
 	w.Run()
 }
 
@@ -93,8 +100,8 @@ func messageBox(hwnd uintptr, text, caption string, flags uint32) int {
 
 	ret, _, _ := messageBoxW.Call(
 		hwnd,
-		uintptr(unsafePointer(textUTF16)),
-		uintptr(unsafePointer(captionUTF16)),
+		uintptr(unsafe.Pointer(textUTF16)),
+		uintptr(unsafe.Pointer(captionUTF16)),
 		uintptr(flags),
 	)
 
