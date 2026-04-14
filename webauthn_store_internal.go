@@ -7,28 +7,34 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// fileCredentialStore implements encrypted file-based credential storage
+// fileCredentialStore implements encrypted file-based credential storage.
+// The AES-256 key is randomly generated and protected by Windows DPAPI (CryptProtectData).
+// The DPAPI-protected key blob is stored alongside the encrypted credentials file.
 type fileCredentialStore struct {
 	mu            sync.RWMutex
 	filePath      string
 	encryptionKey []byte
 }
 
-// newFileCredentialStore creates a new file-based credential store
-// The file is stored in %APPDATA%\go-webview2\webauthn_credentials.enc
-// Encryption uses AES-GCM with a key derived from the Windows user SID
+// newFileCredentialStore creates a new file-based credential store.
+//
+// Files created:
+//   - %APPDATA%\go-webview2\webauthn_credentials.enc — AES-GCM encrypted credentials
+//   - %APPDATA%\go-webview2\webauthn_credentials.key — DPAPI-protected AES key blob
+//
+// The AES key is randomly generated on first use and protected by Windows DPAPI,
+// binding it to the current Windows user session.
 func newFileCredentialStore() (*fileCredentialStore, error) {
-	// Get %APPDATA% directory
 	appData := os.Getenv("APPDATA")
 	if appData == "" {
 		appData = os.Getenv("USERPROFILE")
@@ -40,49 +46,87 @@ func newFileCredentialStore() (*fileCredentialStore, error) {
 		return nil, ErrAppDataNotFound
 	}
 
-	// Create go-webview2 directory
 	dir := filepath.Join(appData, "go-webview2")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
 
-	filePath := filepath.Join(dir, "webauthn_credentials.enc")
-
-	// Derive encryption key from Windows user SID
-	key, err := deriveKeyFromUserSID()
+	key, err := loadOrCreateDPAPIKey(filepath.Join(dir, "webauthn_credentials.key"))
 	if err != nil {
 		return nil, err
 	}
 
 	return &fileCredentialStore{
-		filePath:      filePath,
+		filePath:      filepath.Join(dir, "webauthn_credentials.enc"),
 		encryptionKey: key,
 	}, nil
 }
 
-// deriveKeyFromUserSID derives an encryption key from the current Windows user's SID
-// This provides basic protection similar to DPAPI but without external dependencies
-func deriveKeyFromUserSID() ([]byte, error) {
-	// Get current process token
-	var token windows.Token
-	err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token)
+// loadOrCreateDPAPIKey loads an existing DPAPI-protected AES key or generates a new one.
+func loadOrCreateDPAPIKey(keyPath string) ([]byte, error) {
+	blob, err := os.ReadFile(keyPath)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if os.IsNotExist(err) {
+		return generateAndStoreDPAPIKey(keyPath)
+	}
+	return dpapiDecrypt(blob)
+}
+
+// generateAndStoreDPAPIKey generates a random 32-byte AES key, protects it with DPAPI, and stores it.
+func generateAndStoreDPAPIKey(keyPath string) ([]byte, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	protected, err := dpapiEncrypt(key)
 	if err != nil {
 		return nil, err
 	}
-	defer token.Close()
-
-	// Get token user information
-	tokenUser, err := token.GetTokenUser()
-	if err != nil {
+	if err := os.WriteFile(keyPath, protected, 0600); err != nil {
 		return nil, err
 	}
+	return key, nil
+}
 
-	// Convert SID to string
-	sidString := tokenUser.User.Sid.String()
+// dpapiEncrypt protects data using Windows DPAPI (CryptProtectData).
+// The result is bound to the current Windows user session.
+func dpapiEncrypt(data []byte) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, ErrEmptyData
+	}
+	dataIn := windows.DataBlob{
+		Size: uint32(len(data)),
+		Data: unsafe.SliceData(data),
+	}
+	var dataOut windows.DataBlob
+	if err := windows.CryptProtectData(&dataIn, nil, nil, 0, nil, 0, &dataOut); err != nil {
+		return nil, err
+	}
+	defer windows.LocalFree(windows.Handle(unsafe.Pointer(dataOut.Data)))
+	result := make([]byte, dataOut.Size)
+	copy(result, unsafe.Slice((*byte)(unsafe.Pointer(dataOut.Data)), dataOut.Size))
+	return result, nil
+}
 
-	// Derive 32-byte key using SHA-256
-	hash := sha256.Sum256([]byte("go-webview2-webauthn:" + sidString))
-	return hash[:], nil
+// dpapiDecrypt unprotects data using Windows DPAPI (CryptUnprotectData).
+func dpapiDecrypt(data []byte) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, ErrEmptyData
+	}
+	dataIn := windows.DataBlob{
+		Size: uint32(len(data)),
+		Data: unsafe.SliceData(data),
+	}
+	var dataOut windows.DataBlob
+	if err := windows.CryptUnprotectData(&dataIn, nil, nil, 0, nil, 0, &dataOut); err != nil {
+		return nil, err
+	}
+	defer windows.LocalFree(windows.Handle(unsafe.Pointer(dataOut.Data)))
+	result := make([]byte, dataOut.Size)
+	copy(result, unsafe.Slice((*byte)(unsafe.Pointer(dataOut.Data)), dataOut.Size))
+	return result, nil
 }
 
 // Save stores a credential (implements CredentialStore interface)
@@ -90,13 +134,11 @@ func (s *fileCredentialStore) Save(cred StoredCredential) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Load existing credentials
 	creds, err := s.loadAllInternal()
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
-	// Update or add credential
 	found := false
 	for i, c := range creds {
 		if c.ID == cred.ID {
@@ -109,7 +151,6 @@ func (s *fileCredentialStore) Save(cred StoredCredential) error {
 		creds = append(creds, cred)
 	}
 
-	// Save to encrypted file
 	return s.saveAllInternal(creds)
 }
 
@@ -181,7 +222,6 @@ func (s *fileCredentialStore) Delete(credentialID string) error {
 
 // loadAllInternal loads all credentials without locking (caller must hold lock)
 func (s *fileCredentialStore) loadAllInternal() ([]StoredCredential, error) {
-	// Read encrypted file
 	encryptedData, err := os.ReadFile(s.filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -190,13 +230,11 @@ func (s *fileCredentialStore) loadAllInternal() ([]StoredCredential, error) {
 		return nil, err
 	}
 
-	// Decrypt
 	plaintext, err := s.decrypt(encryptedData)
 	if err != nil {
 		return nil, err
 	}
 
-	// Unmarshal JSON
 	var creds []StoredCredential
 	if err := json.Unmarshal(plaintext, &creds); err != nil {
 		return nil, err
@@ -207,19 +245,16 @@ func (s *fileCredentialStore) loadAllInternal() ([]StoredCredential, error) {
 
 // saveAllInternal saves all credentials without locking (caller must hold lock)
 func (s *fileCredentialStore) saveAllInternal(creds []StoredCredential) error {
-	// Marshal to JSON
 	data, err := json.Marshal(creds)
 	if err != nil {
 		return err
 	}
 
-	// Encrypt
 	encryptedData, err := s.encrypt(data)
 	if err != nil {
 		return err
 	}
 
-	// Write to file
 	return os.WriteFile(s.filePath, encryptedData, 0600)
 }
 
@@ -235,15 +270,12 @@ func (s *fileCredentialStore) encrypt(plaintext []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// Generate nonce
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
 
-	// Encrypt and append nonce
-	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
-	return ciphertext, nil
+	return gcm.Seal(nonce, nonce, plaintext, nil), nil
 }
 
 // decrypt decrypts data using AES-GCM
@@ -264,10 +296,5 @@ func (s *fileCredentialStore) decrypt(ciphertext []byte) ([]byte, error) {
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return plaintext, nil
+	return gcm.Open(nil, nonce, ciphertext, nil)
 }

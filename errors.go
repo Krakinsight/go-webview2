@@ -47,4 +47,7 @@ var (
 
 	// ErrInvalidUserID is returned when a user ID is invalid.
 	ErrInvalidUserID = fmt.Errorf("0x%X%X invalid_user_id", "WEBVIEW-WEBAUTH", []byte{0x0D})
+
+	// ErrEmptyData is returned when an empty byte slice is passed to DPAPI encrypt/decrypt.
+	ErrEmptyData = fmt.Errorf("0x%X%X empty_data", "WEBVIEW-WEBAUTH", []byte{0x0E})
 )
