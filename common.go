@@ -157,6 +157,14 @@ type WindowOptions struct {
 	// Note: This setting affects the entire process and should be set early.
 	// On older Windows versions where the API is unavailable, this setting is silently ignored.
 	DpiAwarenessContext DpiAwarenessContext
+
+	// Hidden creates the window without showing it initially.
+	// When true, the window is created but not displayed (no ShowWindow call).
+	// Use Hide() and Show() methods to control visibility after creation.
+	//
+	// Example:
+	//   Hidden: true  // Create window hidden, show it later via Show()
+	Hidden bool
 }
 
 // WebView is the interface for the webview.
@@ -177,6 +185,14 @@ type WebView interface {
 
 	// Destroy destroys a webview and closes the native window.
 	Destroy()
+
+	// Hide hides the window without destroying it (SW_HIDE).
+	// Must be called via Dispatch or from the UI thread.
+	Hide()
+
+	// Show shows the window and gives it focus (SW_SHOW).
+	// Must be called via Dispatch or from the UI thread.
+	Show()
 
 	// Window returns a native window handle pointer. When using GTK backend the
 	// pointer is GtkWindow pointer, when using Cocoa backend the pointer is

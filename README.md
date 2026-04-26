@@ -116,6 +116,7 @@ See [Virtual-Key Codes](https://learn.microsoft.com/en-us/windows/win32/inputdev
 - `WindowStyleFixed` - Non-resizable window
 - `WindowStyleBorderless` - No borders/title bar (custom UI)
 - `WindowStyleToolWindow` - Tool window (not in taskbar)
+- `WindowStyleDialog` - Dialog-style window (popup with caption and system menu)
 
 ### DPI Awareness
 
@@ -233,7 +234,32 @@ if errors.Is(err, webview2.ErrWindowsHelloNoCredential) {
 if errors.Is(err, webview2.ErrOperationCancelledByUser) {
     // User denied the operation
 }
+if errors.Is(err, webview2.ErrNoMatchingCredential) {
+    // No credential in the store matches allowCredentials
+}
+if errors.Is(err, webview2.ErrOperationAlreadyInProgress) {
+    // Another WebAuthn operation is already running
+}
 ```
+
+**Full error reference:**
+
+| Error | Description |
+|-------|-------------|
+| `ErrWebAuthnDLLNotAvailable` | `webauthn.dll` cannot be loaded on this system |
+| `ErrWindowsHelloNoCredential` | Windows Hello has no credential for the requested RP |
+| `ErrCredentialAttestationNil` | `WebAuthNAuthenticatorMakeCredential` returned a nil attestation |
+| `ErrOperationAlreadyInProgress` | A WebAuthn operation is already running |
+| `ErrOperationCancelledByUser` | The user approval callback denied the operation |
+| `ErrNoWindowHandle` | The webview window handle cannot be retrieved |
+| `ErrAssertionNil` | `WebAuthNAuthenticatorGetAssertion` returned a nil assertion |
+| `ErrCredentialNotFound` | A credential cannot be located in the store |
+| `ErrNoMatchingCredential` | No credential matches the `allowCredentials` list |
+| `ErrAppDataNotFound` | The `APPDATA` directory cannot be determined |
+| `ErrCiphertextTooShort` | Credential file is truncated or corrupt |
+| `ErrInvalidPrivateKeyLength` | Stored private key has an unexpected byte length |
+| `ErrInvalidUserID` | User ID is invalid |
+| `ErrEmptyData` | An empty byte slice was passed to DPAPI encrypt/decrypt |
 
 **Credential Storage:**
 
@@ -344,6 +370,40 @@ Then in JavaScript:
 <button onclick="if(confirm('Close?')) closewebview()">Close</button>
 ```
 
+### Hide / Show Window
+
+Control window visibility without destroying the webview:
+
+```go
+// Hide the window (must be called via Dispatch or from the UI thread)
+w.Hide()
+
+// Show the window and give it focus
+w.Show()
+```
+
+Both methods dispatch internally to the UI thread and can be called from any goroutine using `w.Dispatch(...)`.
+
+### Hidden Window at Startup
+
+Create a window that is not shown until you explicitly call `Show()`:
+
+```go
+w := webview2.NewWithOptions(webview2.WebViewOptions{
+    WindowOptions: webview2.WindowOptions{
+        Title:  "My App",
+        Width:  800,
+        Height: 600,
+        Hidden: true, // Window created but not shown
+    },
+})
+
+// ... setup, load content, bind functions ...
+
+// Show the window when ready
+w.Show()
+```
+
 ## Demos
 
 ### Available Demos
@@ -388,9 +448,16 @@ go run ./cmd/demo-accelerator-keys
 go run ./cmd/demo-close
 ```
 
-**WebAuthn bridge demonstration:**
+**WebAuthn bridge — self-contained HTML demo:**
 ```
-go run ./cmd/demo-webauthn
+go run ./cmd/demo-webauthn_1
 ```
+Displays an embedded HTML page with register/authenticate buttons. Uses Windows Hello with an optional approval dialog and ECDSA fallback.
+
+**WebAuthn bridge — real-world site (webauthn.io):**
+```
+go run ./cmd/demo-webauthn_2
+```
+Navigates to `https://webauthn.io/` with the WebAuthn bridge enabled so the site can use the platform authenticator through the Go bridge.
 
 This will use go-winloader to load an embedded copy of WebView2Loader.dll. If you want, you can also provide a newer version of WebView2Loader.dll in the DLL search path and it should be picked up instead. It can be acquired from the WebView2 SDK (which is permissively licensed.)

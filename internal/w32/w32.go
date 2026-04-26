@@ -79,6 +79,7 @@ const (
 )
 
 const (
+	SWHide = 0 // SW_HIDE
 	SWShow = 5
 )
 

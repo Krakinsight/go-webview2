@@ -478,9 +478,9 @@ func (w *webview) CreateWithOptions(opts WindowOptions) bool {
 	)
 	setWindowContext(w.hwnd, w)
 
-	_, _, _ = w32.User32ShowWindow.Call(w.hwnd, w32.SWShow)
-	_, _, _ = w32.User32UpdateWindow.Call(w.hwnd)
-	_, _, _ = w32.User32SetFocus.Call(w.hwnd)
+	if !opts.Hidden {
+		w._show()
+	}
 
 	if !w.browser.Embed(w.hwnd) {
 		return false
@@ -683,4 +683,37 @@ func (w *webview) SetAcceleratorKeyCallback(callback AcceleratorKeyCallback) {
 		return
 	}
 	chromium.AcceleratorKeyCallback = callback
+}
+
+// ************************************************************************************************
+// Hide hides the WebView window without destroying it (SW_HIDE).
+// Must be called via Dispatch or from the UI thread.
+// The window remains in memory and can be shown again via Show().
+//
+// Example usage:
+//
+//	w.Hide()
+func (w *webview) Hide() {
+	w.Dispatch(func() {
+		_, _, _ = w32.User32ShowWindow.Call(w.hwnd, w32.SWHide)
+	})
+}
+
+// ************************************************************************************************
+// Show shows the WebView window and gives it focus (SW_SHOW).
+//
+// Example usage:
+//
+//	w.Show()
+func (w *webview) Show() {
+	w.Dispatch(w._show)
+}
+
+// ************************************************************************************************
+// _show shows the WebView window and gives it focus (SW_SHOW).
+// Must be called via Dispatch or from the UI thread.
+func (w *webview) _show() {
+	_, _, _ = w32.User32ShowWindow.Call(w.hwnd, w32.SWShow)
+	_, _, _ = w32.User32UpdateWindow.Call(w.hwnd)
+	_, _, _ = w32.User32SetFocus.Call(w.hwnd)
 }
