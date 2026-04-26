@@ -187,12 +187,13 @@ type WebView interface {
 	Destroy()
 
 	// Hide hides the window without destroying it (SW_HIDE).
-	// Must be called via Dispatch or from the UI thread.
 	Hide()
 
 	// Show shows the window and gives it focus (SW_SHOW).
-	// Must be called via Dispatch or from the UI thread.
 	Show()
+
+	// ShowUrl opens the specified URL in the default web browser.
+	ShowUrl(url string)
 
 	// IsHidden returns true if the window is hidden, false if visible.
 	// This method checks the window's visibility state using the Windows IsWindowVisible API.
