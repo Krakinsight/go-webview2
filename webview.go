@@ -710,6 +710,28 @@ func (w *webview) Show() {
 }
 
 // ************************************************************************************************
+// IsHidden returns true if the window is hidden, false if visible.
+// This method checks the window's visibility state using the Windows IsWindowVisible API.
+//
+// This method is thread-safe and can be called from any goroutine.
+// Unlike Hide() and Show(), it only reads window state without modifying it.
+// It directly queries the Windows IsWindowVisible API.
+//
+// Returns:
+//   - bool: true if the window is hidden, false if visible
+//
+// Example usage:
+//
+//	if w.IsHidden() {
+//	    fmt.Println("Window is hidden")
+//	    w.Show()
+//	}
+func (w *webview) IsHidden() bool {
+	ret, _, _ := w32.User32IsWindowVisible.Call(w.hwnd)
+	return ret == 0
+}
+
+// ************************************************************************************************
 // _show shows the WebView window and gives it focus (SW_SHOW).
 // Must be called via Dispatch or from the UI thread.
 func (w *webview) _show() {

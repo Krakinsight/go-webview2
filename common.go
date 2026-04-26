@@ -194,6 +194,10 @@ type WebView interface {
 	// Must be called via Dispatch or from the UI thread.
 	Show()
 
+	// IsHidden returns true if the window is hidden, false if visible.
+	// This method checks the window's visibility state using the Windows IsWindowVisible API.
+	IsHidden() bool
+
 	// Window returns a native window handle pointer. When using GTK backend the
 	// pointer is GtkWindow pointer, when using Cocoa backend the pointer is
 	// NSWindow pointer, when using Win32 backend the pointer is HWND pointer.

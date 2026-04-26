@@ -46,6 +46,7 @@ var (
 	User32GetAncestor                   = user32.NewProc("GetAncestor")
 	User32SystemParametersInfoW         = user32.NewProc("SystemParametersInfoW")
 	User32SetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
+	User32IsWindowVisible               = user32.NewProc("IsWindowVisible")
 )
 
 const (

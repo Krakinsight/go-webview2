@@ -380,9 +380,15 @@ w.Hide()
 
 // Show the window and give it focus
 w.Show()
+
+// Check if the window is currently hidden
+if w.IsHidden() {
+    fmt.Println("Window is hidden")
+    w.Show()
+}
 ```
 
-Both methods dispatch internally to the UI thread and can be called from any goroutine using `w.Dispatch(...)`.
+Both [`Hide()`](webview.go:696) and [`Show()`](webview.go:708) methods dispatch internally to the UI thread. [`IsHidden()`](webview.go:728) checks the window's visibility state using the Windows `IsWindowVisible` API and returns `true` if the window is hidden.
 
 ### Hidden Window at Startup
 
