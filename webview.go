@@ -710,6 +710,24 @@ func (w *webview) Show() {
 }
 
 // ************************************************************************************************
+// ShowUrl shows the WebView window, gives it focus (SW_SHOW), and navigates to the given URL.
+// This is a convenience method combining Show() and Navigate() in a single dispatched call,
+// ensuring both operations happen atomically on the UI thread.
+//
+// Parameters:
+//   - url: The URL to navigate to (e.g. "https://example.com")
+//
+// Example usage:
+//
+//	w.ShowUrl("https://example.com")
+func (w *webview) ShowUrl(url string) {
+	w.Dispatch(func() {
+		w.browser.Navigate(url)
+		w._show()
+	})
+}
+
+// ************************************************************************************************
 // IsHidden returns true if the window is hidden, false if visible.
 // This method checks the window's visibility state using the Windows IsWindowVisible API.
 //

@@ -381,6 +381,9 @@ w.Hide()
 // Show the window and give it focus
 w.Show()
 
+// Show the window, give it focus, and navigate to a URL (atomic operation)
+w.ShowUrl("https://example.com")
+
 // Check if the window is currently hidden
 if w.IsHidden() {
     fmt.Println("Window is hidden")
@@ -388,7 +391,7 @@ if w.IsHidden() {
 }
 ```
 
-Both [`Hide()`](webview.go:696) and [`Show()`](webview.go:708) methods dispatch internally to the UI thread. [`IsHidden()`](webview.go:728) checks the window's visibility state using the Windows `IsWindowVisible` API and returns `true` if the window is hidden.
+[`Hide()`](webview.go:696), [`Show()`](webview.go:708), and [`ShowUrl()`](webview.go:712) methods dispatch internally to the UI thread. [`ShowUrl()`](webview.go:712) is a convenience method combining [`Show()`](webview.go:708) and [`Navigate()`](webview.go:534) in a single atomic call. [`IsHidden()`](webview.go:736) checks the window's visibility state using the Windows `IsWindowVisible` API and returns `true` if the window is hidden.
 
 ### Hidden Window at Startup
 
