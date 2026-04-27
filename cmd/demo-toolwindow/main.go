@@ -10,7 +10,7 @@ func main() {
 	// Demo 4: Tool window
 	// This demonstrates a tool window style - a small window with smaller title bar
 	// that is not shown in the taskbar, typically used for auxiliary tools
-	w := webview2.NewWithOptions(webview2.WebViewOptions{
+	w,_ := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug:     true,
 		AutoFocus: true,
 		WindowOptions: webview2.WindowOptions{

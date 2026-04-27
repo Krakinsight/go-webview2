@@ -11,7 +11,7 @@ func main() {
 	// This demonstrates negative coordinates for positioning from screen edges
 	// X: -500 means 500px from the right edge of the work area
 	// Y: -1 means 1px from the bottom edge of the work area (excludes taskbar)
-	w := webview2.NewWithOptions(webview2.WebViewOptions{
+	w,_ := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug:     true,
 		AutoFocus: true,
 		WindowOptions: webview2.WindowOptions{

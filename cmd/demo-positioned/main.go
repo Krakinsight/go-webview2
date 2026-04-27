@@ -10,7 +10,7 @@ func main() {
 	// Demo 2: Positioned window with custom style and User-Agent
 	// This demonstrates precise window positioning from the top-left corner
 	// with a fixed (non-resizable) style and custom User-Agent
-	w := webview2.NewWithOptions(webview2.WebViewOptions{
+	w,_ := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug:     true,
 		AutoFocus: true,
 		UserAgent: "CustomApp/1.0 (Demo-Positioned)",

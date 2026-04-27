@@ -10,7 +10,7 @@ func main() {
 	// Demo 3: Borderless window
 	// This demonstrates a window without title bar or borders, useful for creating
 	// custom UI with your own controls
-	w := webview2.NewWithOptions(webview2.WebViewOptions{
+	w, _ := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug:     true,
 		AutoFocus: true,
 		WindowOptions: webview2.WindowOptions{
@@ -26,7 +26,7 @@ func main() {
 		log.Fatalln("Failed to load webview.")
 	}
 	defer w.Destroy()
-	
+
 	w.Navigate("https://en.m.wikipedia.org/wiki/Main_Page")
 	w.Run()
 }
