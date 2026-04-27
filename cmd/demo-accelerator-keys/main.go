@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	w := webview2.NewWithOptions(webview2.WebViewOptions{
+	w,_ := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug:     true,
 		AutoFocus: true,
 		WindowOptions: webview2.WindowOptions{
