@@ -40,7 +40,7 @@ func main() {
 
 	go func() {
 		time.Sleep(3 * time.Second)
-		w.ShowUrl("https://krakinsight.ch")
+		w.ShowUrl("https://immortal-pc.info")
 	}()
 	w.Run()
 }
