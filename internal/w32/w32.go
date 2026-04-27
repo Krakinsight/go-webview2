@@ -47,6 +47,8 @@ var (
 	User32SystemParametersInfoW         = user32.NewProc("SystemParametersInfoW")
 	User32SetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
 	User32IsWindowVisible               = user32.NewProc("IsWindowVisible")
+	User32SetForegroundWindow           = user32.NewProc("SetForegroundWindow")
+	User32BringWindowToTop              = user32.NewProc("BringWindowToTop")
 )
 
 const (
@@ -80,8 +82,9 @@ const (
 )
 
 const (
-	SWHide = 0 // SW_HIDE
-	SWShow = 5
+	SWHide       = 0 // SW_HIDE
+	SWShowNormal = 1 // SW_SHOWNORMAL - for first-time window display
+	SWShow       = 5
 )
 
 const (
@@ -89,6 +92,14 @@ const (
 	SWPNoActivate   = 0x0010
 	SWPNoMove       = 0x0002
 	SWPFrameChanged = 0x0020
+	SWPShowWindow   = 0x0040
+	SWPNoSize       = 0x0001
+)
+
+const (
+	HWNDTop       = 0
+	HWNDTopMost   = ^uintptr(0) // -1
+	HWNDNoTopMost = ^uintptr(1) // -2
 )
 
 const (
@@ -111,7 +122,8 @@ const (
 )
 
 const (
-	GWLStyle = -16
+	GWLStyle   = -16
+	GWLExStyle = -20
 )
 
 const (
@@ -128,6 +140,11 @@ const (
 	WAInactive    = 0
 	WAActive      = 1
 	WAActiveClick = 2
+)
+
+const (
+	WSExAppWindow  = 0x00040000
+	WSExToolWindow = 0x00000080
 )
 
 type WndClassExW struct {

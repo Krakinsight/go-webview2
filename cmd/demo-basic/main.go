@@ -9,7 +9,7 @@ import (
 func main() {
 	// Demo 1: Basic centered window
 	// This demonstrates the simplest window configuration with centered positioning
-	w := webview2.NewWithOptions(webview2.WebViewOptions{
+	w, _ := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug:     true,
 		AutoFocus: true,
 		WindowOptions: webview2.WindowOptions{

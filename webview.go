@@ -479,9 +479,12 @@ func (w *webview) CreateWithOptions(opts WindowOptions) bool {
 	)
 	setWindowContext(w.hwnd, w)
 
-	if !opts.Hidden {
-		w._show()
-	}
+	// WARNING: NEVER keep hidden the window after creating it, or the WebView2 control will fail to initialize and embed properly.
+	// This is a quirk of the WebView2 control on Windows - it must be visible at least once to initialize correctly.
+	// If you want to start hidden, create the window as visible and then immediately hide it after initialization.
+	//if !opts.Hidden {
+	w._show()
+	//}
 
 	if !w.browser.Embed(w.hwnd) {
 		return false
