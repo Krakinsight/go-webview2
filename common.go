@@ -36,17 +36,62 @@ const (
 
 	// WindowStyleBorderless creates a window without any borders or decorations.
 	// Useful for custom-styled windows or splash screens.
+	// Note: This window will appear in the taskbar unless you also set ExStyle to WindowExStyleToolWindow.
 	WindowStyleBorderless WindowStyle = 0x80000000 // WS_POPUP
 
 	// WindowStyleToolWindow creates a tool window with a smaller title bar.
-	// Not shown in taskbar.
-	WindowStyleToolWindow WindowStyle = 0x00C80080 // WS_EX_TOOLWINDOW | WS_CAPTION
+	// Must be combined with WindowExStyleToolWindow to hide from taskbar.
+	WindowStyleToolWindow WindowStyle = 0x00C80000 // WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
 
 	// WindowStyleFixed creates a non-resizable window with title bar and system menu.
 	WindowStyleFixed WindowStyle = 0x00C80000 // WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
 
 	// WindowStyleDialog creates a dialog-style window.
 	WindowStyleDialog WindowStyle = 0x80C80000 // WS_POPUP | WS_CAPTION | WS_SYSMENU
+)
+
+// ************************************************************************************************
+// WindowExStyle defines extended window styles used with dwExStyle parameter of CreateWindowExW.
+// These styles control additional window behavior such as taskbar visibility, layering, and special effects.
+type WindowExStyle uint32
+
+const (
+	// WindowExStyleDefault uses no extended styles (0).
+	WindowExStyleDefault WindowExStyle = 0
+
+	// WindowExStyleToolWindow creates a window not shown in the taskbar.
+	// Useful for floating toolboxes, popups, and utility windows.
+	// Corresponds to WS_EX_TOOLWINDOW = 0x00000080
+	WindowExStyleToolWindow WindowExStyle = 0x00000080
+
+	// WindowExStyleAppWindow forces the window to be shown in the taskbar.
+	// This overrides the default behavior where child windows are hidden.
+	// Corresponds to WS_EX_APPWINDOW = 0x00040000
+	WindowExStyleAppWindow WindowExStyle = 0x00040000
+)
+
+// ************************************************************************************************
+// WindowStyleCombination provides a convenient way to specify both regular and extended window styles.
+// Use this when you need a specific combination of Style and ExStyle.
+type WindowStyleCombination struct {
+	Style   WindowStyle
+	ExStyle WindowExStyle
+}
+
+var (
+	// WindowStyleBorderlessNoTaskbar creates a borderless popup window hidden from taskbar.
+	// Use this for overlays, context menus, tooltips, or fullscreen borderless windows.
+	WindowStyleBorderlessNoTaskbar = WindowStyleCombination{
+		Style:   WindowStyleBorderless,
+		ExStyle: WindowExStyleToolWindow,
+	}
+
+	// WindowStyleToolWindowNoTaskbar creates a tool window with caption, hidden from taskbar.
+	// Use this for floating tool palettes, property inspectors, or auxiliary windows.
+	WindowStyleToolWindowNoTaskbar = WindowStyleCombination{
+		Style:   WindowStyleToolWindow,
+		ExStyle: WindowExStyleToolWindow,
+	}
 )
 
 // ************************************************************************************************
@@ -146,6 +191,11 @@ type WindowOptions struct {
 	// Style specifies the window style using Windows style constants.
 	// Use WindowStyleDefault if not specified (0 value).
 	Style WindowStyle
+
+	// ExStyle specifies extended window styles (dwExStyle parameter).
+	// Use WindowExStyleDefault (0) for no extended styles.
+	// Common usage: WindowExStyleToolWindow to hide window from taskbar.
+	ExStyle WindowExStyle
 
 	// DpiAwarenessContext sets the DPI awareness for the process.
 	// Use DpiAwarenessContextDefault (0) to skip setting DPI awareness.

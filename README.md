@@ -112,11 +112,64 @@ See [Virtual-Key Codes](https://learn.microsoft.com/en-us/windows/win32/inputdev
 
 ### Window Styles
 
-- `WindowStyleDefault` - Standard resizable window
-- `WindowStyleFixed` - Non-resizable window
-- `WindowStyleBorderless` - No borders/title bar (custom UI)
-- `WindowStyleToolWindow` - Tool window (not in taskbar)
+go-webview2 supports flexible window styling through two separate style parameters:
+
+#### Regular Styles (`Style`)
+
+- `WindowStyleDefault` - Standard resizable window with title bar, system menu, and thick frame
+- `WindowStyleFixed` - Non-resizable window with title bar and system menu
+- `WindowStyleBorderless` - No borders/title bar (for custom UI)
+- `WindowStyleToolWindow` - Tool window with smaller title bar
 - `WindowStyleDialog` - Dialog-style window (popup with caption and system menu)
+
+#### Extended Styles (`ExStyle`)
+
+Extended styles control additional window behavior:
+
+- `WindowExStyleDefault` - No extended styles (0)
+- `WindowExStyleToolWindow` - Hides window from taskbar (useful for utility windows, popups, overlays)
+- `WindowExStyleAppWindow` - Forces window to appear in taskbar
+
+#### Convenience Constants
+
+For common combinations, use these pre-configured style pairs:
+
+- `WindowStyleBorderlessNoTaskbar` - Borderless popup hidden from taskbar (ideal for overlays, context menus, tooltips)
+- `WindowStyleToolWindowNoTaskbar` - Tool window with caption, hidden from taskbar (ideal for floating palettes, property inspectors)
+
+#### Usage Examples
+
+**Standard window (default):**
+```go
+WindowOptions: webview2.WindowOptions{
+    Title:  "My App",
+    Width:  800,
+    Height: 600,
+}
+```
+
+**Tool window hidden from taskbar:**
+```go
+WindowOptions: webview2.WindowOptions{
+    Title:   "Tool Palette",
+    Width:   300,
+    Height:  400,
+    Style:   webview2.WindowStyleToolWindow,
+    ExStyle: webview2.WindowExStyleToolWindow,
+}
+```
+
+**Borderless overlay not in taskbar:**
+```go
+WindowOptions: webview2.WindowOptions{
+    Width:   400,
+    Height:  300,
+    Style:   webview2.WindowStyleBorderless,
+    ExStyle: webview2.WindowExStyleToolWindow,
+}
+```
+
+**Note:** To hide a window from the taskbar, you must set `ExStyle: WindowExStyleToolWindow`. The `Style` field alone is not sufficient.
 
 ### DPI Awareness
 

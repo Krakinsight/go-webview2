@@ -464,7 +464,7 @@ func (w *webview) CreateWithOptions(opts WindowOptions) bool {
 	}
 
 	w.hwnd, _, _ = w32.User32CreateWindowExW.Call(
-		0,
+		uintptr(opts.ExStyle), // dwExStyle - extended window styles (e.g. WS_EX_TOOLWINDOW)
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(windowName)),
 		uintptr(windowStyle), // Use specified or default style
