@@ -1,0 +1,17 @@
+# github.com/fxamacker/cbor/v2 v2.9.1
+## explicit; go 1.20
+github.com/fxamacker/cbor/v2
+# github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1
+## explicit; go 1.14
+github.com/jchv/go-winloader
+github.com/jchv/go-winloader/internal/loader
+github.com/jchv/go-winloader/internal/memloader
+github.com/jchv/go-winloader/internal/pe
+github.com/jchv/go-winloader/internal/vmem
+github.com/jchv/go-winloader/internal/winloader
+# github.com/x448/float16 v0.8.4
+## explicit; go 1.11
+github.com/x448/float16
+# golang.org/x/sys v0.43.0
+## explicit; go 1.25.0
+golang.org/x/sys/windows
