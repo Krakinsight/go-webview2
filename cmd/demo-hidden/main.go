@@ -21,7 +21,6 @@ func main() {
 			Style:               webview2.WindowStyleBorderless,
 			ExStyle:             webview2.WindowExStyleToolWindow, // Hide from taskbar
 			DpiAwarenessContext: webview2.DpiAwarenessContextPerMonitorAwareV2,
-			Hidden:              true, // Pre-warmed window starts hidden
 		},
 		WebAuthn: webview2.WebAuthnOptions{
 			Enabled: webview2.IsWebAuthnDLLAvailable(),

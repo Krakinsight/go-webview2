@@ -212,14 +212,6 @@ type WindowOptions struct {
 	// Note: This setting affects the entire process and should be set early.
 	// On older Windows versions where the API is unavailable, this setting is silently ignored.
 	DpiAwarenessContext DpiAwarenessContext
-
-	// Hidden creates the window without showing it initially.
-	// When true, the window is created but not displayed (no ShowWindow call).
-	// Use Hide() and Show() methods to control visibility after creation.
-	//
-	// Example:
-	//   Hidden: true  // Create window hidden, show it later via Show()
-	Hidden bool
 }
 
 // WebView is the interface for the webview.
