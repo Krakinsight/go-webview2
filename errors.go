@@ -50,4 +50,6 @@ var (
 
 	// ErrEmptyData is returned when an empty byte slice is passed to DPAPI encrypt/decrypt.
 	ErrEmptyData = fmt.Errorf("0x%X%X empty_data", "WEBVIEW-WEBAUTH", []byte{0x0E})
+
+	ErrFailedToCreateWebViewWindow = fmt.Errorf("0x%X%X failed_to_create_webview_window", "WEBVIEW-GENERAL", []byte{0x01})
 )

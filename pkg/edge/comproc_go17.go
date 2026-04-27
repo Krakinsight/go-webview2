@@ -5,8 +5,9 @@ package edge
 
 import "syscall"
 
-//go:uintptrescapes
 // Call calls a COM procedure.
+//
+//go:uintptrescapes
 func (p ComProc) Call(a ...uintptr) (r1, r2 uintptr, lastErr error) {
 	// The magic uintptrescapes comment is needed to prevent moving uintptr(unsafe.Pointer(p)) so calls to .Call() also
 	// satisfy the unsafe.Pointer rule "(4) Conversion of a Pointer to a uintptr when calling syscall.Syscall."
@@ -46,6 +47,6 @@ func (p ComProc) Call(a ...uintptr) (r1, r2 uintptr, lastErr error) {
 	case 15:
 		return syscall.Syscall15(uintptr(p), 15, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14])
 	default:
-		panic("too many arguments")
+		return 0, 0, ErrTooManyArguments
 	}
 }

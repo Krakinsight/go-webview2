@@ -48,6 +48,41 @@ func main() {
 }
 ```
 
+## ⚠️ CRITICAL WARNING: Main Goroutine Requirement
+
+**WebView2 MUST be created from the main goroutine** (the goroutine running `main()`). Creating a webview from any other goroutine will cause unpredictable crashes and undefined behavior due to Win32 window message loop threading requirements.
+
+```go
+// ✅ CORRECT - Create in main() directly
+func main() {
+    w := webview2.NewWithOptions(...)  // OK: main goroutine
+    defer w.Destroy()
+    w.Run()
+}
+
+// ❌ WRONG - Never create in a goroutine
+func main() {
+    go func() {
+        w := webview2.NewWithOptions(...)  // CRASH: not main goroutine
+        w.Run()
+    }()
+    select {}
+}
+
+// ✅ CORRECT - Launch goroutines AFTER creation
+func main() {
+    w := webview2.NewWithOptions(...)  // OK: main goroutine
+    defer w.Destroy()
+    
+    // Background work is fine AFTER webview is created
+    go doBackgroundWork(w)
+    
+    w.Run()  // Message loop runs in main goroutine
+}
+```
+
+**Potential reason**: Windows requires that the thread creating a window also runs the message loop for that window. Go's goroutine scheduler can migrate goroutines between OS threads, but the main goroutine is pinned to the OS thread calling `main()`.
+
 ## Features
 
 ### Window Positioning

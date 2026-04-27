@@ -6,6 +6,7 @@ package webview2
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"reflect"
 	"strconv"
@@ -154,17 +155,17 @@ type WebAuthnOptions struct {
 }
 
 // New creates a new webview in a new window.
-func New(debug bool) WebView { return NewWithOptions(WebViewOptions{Debug: debug}) }
+func New(debug bool) (WebView, error) { return NewWithOptions(WebViewOptions{Debug: debug}) }
 
 // NewWindow creates a new webview using an existing window.
 //
 // Deprecated: Use NewWithOptions.
-func NewWindow(debug bool, window unsafe.Pointer) WebView {
+func NewWindow(debug bool, window unsafe.Pointer) (WebView, error) {
 	return NewWithOptions(WebViewOptions{Debug: debug, Window: window})
 }
 
 // NewWithOptions creates a new webview using the provided options.
-func NewWithOptions(options WebViewOptions) WebView {
+func NewWithOptions(options WebViewOptions) (WebView, error) {
 	w := &webview{}
 	w.bindings = map[string]interface{}{}
 	w.autofocus = options.AutoFocus
@@ -177,29 +178,29 @@ func NewWithOptions(options WebViewOptions) WebView {
 	w.browser = chromium
 	w.mainthread, _, _ = w32.Kernel32GetCurrentThreadID.Call()
 	if !w.CreateWithOptions(options.WindowOptions) {
-		return nil
+		return nil, ErrFailedToCreateWebViewWindow
 	}
 
 	settings, err := chromium.GetSettings()
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("failed to get WebView settings: %w", err)
 	}
 	w.settings = settings
 	// disable context menu
 	err = w.settings.PutAreDefaultContextMenusEnabled(options.Debug)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("failed to set context menu: %w", err)
 	}
 	// disable developer tools
 	err = w.settings.PutAreDevToolsEnabled(options.Debug)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("failed to set developer tools: %w", err)
 	}
 	// set custom user agent if provided
 	if options.UserAgent != "" {
 		err = w.settings.PutUserAgent(options.UserAgent)
 		if err != nil {
-			log.Fatal(err)
+			return nil, fmt.Errorf("failed to set user agent: %w", err)
 		}
 	}
 
@@ -216,7 +217,7 @@ func NewWithOptions(options WebViewOptions) WebView {
 		}
 	}
 
-	return w
+	return w, nil
 }
 
 type rpcMessage struct {
