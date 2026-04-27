@@ -19,6 +19,7 @@ func main() {
 			Height:   600,
 			Location: &webview2.Location{X: 200, Y: 200}, // Positioned at 200,200
 			Style:    webview2.WindowStyleBorderless,     // No borders or title bar
+			ExStyle:  webview2.WindowExStyleTopMost,      // Always on top
 		},
 	})
 

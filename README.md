@@ -129,6 +129,7 @@ Extended styles control additional window behavior:
 - `WindowExStyleDefault` - No extended styles (0)
 - `WindowExStyleToolWindow` - Hides window from taskbar (useful for utility windows, popups, overlays)
 - `WindowExStyleAppWindow` - Forces window to appear in taskbar
+- `WindowExStyleTopMost` - Always on top (stays above all non-topmost windows, even when deactivated)
 
 #### Convenience Constants
 
@@ -166,6 +167,26 @@ WindowOptions: webview2.WindowOptions{
     Height:  300,
     Style:   webview2.WindowStyleBorderless,
     ExStyle: webview2.WindowExStyleToolWindow,
+}
+```
+
+**Borderless window always on top:**
+```go
+WindowOptions: webview2.WindowOptions{
+    Width:   400,
+    Height:  300,
+    Style:   webview2.WindowStyleBorderless,
+    ExStyle: webview2.WindowExStyleTopMost,
+}
+```
+
+**Combine multiple extended styles (always on top + hidden from taskbar):**
+```go
+WindowOptions: webview2.WindowOptions{
+    Width:   400,
+    Height:  300,
+    Style:   webview2.WindowStyleBorderless,
+    ExStyle: webview2.WindowExStyleTopMost | webview2.WindowExStyleToolWindow,
 }
 ```
 

@@ -145,6 +145,7 @@ const (
 const (
 	WSExAppWindow  = 0x00040000
 	WSExToolWindow = 0x00000080
+	WSExTopMost    = 0x00000008
 )
 
 type WndClassExW struct {

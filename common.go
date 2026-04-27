@@ -68,6 +68,11 @@ const (
 	// This overrides the default behavior where child windows are hidden.
 	// Corresponds to WS_EX_APPWINDOW = 0x00040000
 	WindowExStyleAppWindow WindowExStyle = 0x00040000
+
+	// WindowExStyleTopMost creates a window that should be placed above all non-topmost windows
+	// and stay above them even when the window is deactivated (always on top).
+	// Corresponds to WS_EX_TOPMOST = 0x00000008
+	WindowExStyleTopMost WindowExStyle = 0x00000008
 )
 
 // ************************************************************************************************
